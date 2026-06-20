@@ -20,21 +20,18 @@ use egui_plot::{Line, Plot, PlotPoints};
 
 use enginesim::engine_config::{EngineDefinition, PipeDefinition, ValveDefinition};
 use enginesim::engine_handling::{EngineHandlingDefinition, nearest_set_point_rpm};
-use enginesim::engine_loader::{LoadSource, load_engine_and_handling, save_engine_and_handling};
-use enginesim::profiles::SimulationProfile;
-use enginesim::single_cylinder::{
-    SingleCylinderEngine, rad_per_s_to_rpm, spark_angle_deg_for_rpm,
+use enginesim::engine_loader::{
+    EngineCatalogEntry, LoadSource, default_engine_directory, default_engine_path,
+    discover_engine_files, load_engine_and_handling, save_engine_and_handling,
 };
+use enginesim::profiles::SimulationProfile;
+use enginesim::single_cylinder::{SingleCylinderEngine, rad_per_s_to_rpm, spark_angle_deg_for_rpm};
 use enginesim::telemetry::{
     EngineControls, EngineFrameTelemetry, MAP_OVERRIDE_MAX_PA, TelemetryAggregator,
     TelemetryAvailability, TelemetryScalar, default_profile_for_gui,
 };
 use enginesim::tuning::{TuningSession, area_m2_from_diameter_mm, diameter_mm_from_area_m2};
 
-// Anchored to the crate directory at compile time so loading and saving work no
-// matter what working directory the binary is launched from (a bare relative
-// path only resolves when the cwd happens to be the repo root).
-const ENGINE_JSON_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/engines/gn250.json");
 const ENGINE_CYCLE_DEG: f64 = 720.0;
 
 fn main() -> eframe::Result<()> {
@@ -56,6 +53,7 @@ enum AngleMode {
 
 struct TuningGuiApp {
     engine_path: PathBuf,
+    engine_options: Vec<EngineCatalogEntry>,
     session: TuningSession,
     profile: SimulationProfile,
     engine: SingleCylinderEngine,
@@ -83,6 +81,23 @@ fn bundled_handling() -> EngineHandlingDefinition {
         .expect("bundled GN250 handling JSON should parse")
 }
 
+fn engine_options_or_default() -> Vec<EngineCatalogEntry> {
+    match discover_engine_files(&default_engine_directory()) {
+        Ok(entries) if !entries.is_empty() => entries,
+        _ => vec![EngineCatalogEntry::from_path(default_engine_path())],
+    }
+}
+
+fn initial_engine_path(options: &[EngineCatalogEntry]) -> PathBuf {
+    let default_path = default_engine_path();
+    options
+        .iter()
+        .find(|entry| entry.path == default_path)
+        .or_else(|| options.first())
+        .map(|entry| entry.path.clone())
+        .unwrap_or(default_path)
+}
+
 fn describe_source(label: &str, source: &LoadSource) -> String {
     match source {
         LoadSource::Disk(path) => format!("{label}: {}", path.display()),
@@ -90,19 +105,41 @@ fn describe_source(label: &str, source: &LoadSource) -> String {
     }
 }
 
+fn load_status(engine_source: &LoadSource, handling_source: &LoadSource) -> String {
+    format!(
+        "{} | {}",
+        describe_source("engine", engine_source),
+        describe_source("handling", handling_source)
+    )
+}
+
+fn align_controls_to_engine(
+    controls: &mut EngineControls,
+    definition: &EngineDefinition,
+    handling: &EngineHandlingDefinition,
+) {
+    controls.lambda_target = definition.combustion.lambda_target.clamp(0.1, 2.0);
+    controls.dyno_target_rpm = definition.crank.initial_speed_rpm.max(1.0);
+    controls.added_inertia_kg_m2 = controls
+        .added_inertia_kg_m2
+        .clamp(0.0, handling.max_added_inertia_kg_m2.max(0.0));
+}
+
 impl TuningGuiApp {
     fn new() -> Self {
-        let engine_path = PathBuf::from(ENGINE_JSON_PATH);
+        let engine_options = engine_options_or_default();
+        let engine_path = initial_engine_path(&engine_options);
         let loaded =
             load_engine_and_handling(&engine_path, &bundled_definition(), &bundled_handling());
-        let load_status = format!(
-            "{} | {}",
-            describe_source("engine", &loaded.engine_source),
-            describe_source("handling", &loaded.handling_source)
-        );
+        let load_status = load_status(&loaded.engine_source, &loaded.handling_source);
         let session = TuningSession::new(loaded.definition, loaded.handling);
         let profile = default_profile_for_gui(session.committed_handling());
-        let controls = EngineControls::default();
+        let mut controls = EngineControls::default();
+        align_controls_to_engine(
+            &mut controls,
+            session.committed_engine(),
+            session.committed_handling(),
+        );
         let engine = SingleCylinderEngine::from_definition_with_profile(
             session.committed_engine().clone(),
             profile,
@@ -112,6 +149,7 @@ impl TuningGuiApp {
 
         Self {
             engine_path,
+            engine_options,
             session,
             profile,
             engine,
@@ -124,6 +162,52 @@ impl TuningGuiApp {
             load_status,
             angle_mode: AngleMode::Absolute,
             diverged: None,
+        }
+    }
+
+    fn load_engine(&mut self, engine_path: PathBuf) {
+        let loaded =
+            load_engine_and_handling(&engine_path, &bundled_definition(), &bundled_handling());
+        self.engine_path = engine_path;
+        self.load_status = load_status(&loaded.engine_source, &loaded.handling_source);
+        self.session.replace(loaded.definition, loaded.handling);
+        self.profile = self.profile_for_committed();
+        align_controls_to_engine(
+            &mut self.controls,
+            self.session.committed_engine(),
+            self.session.committed_handling(),
+        );
+        self.reset_engine();
+    }
+
+    fn selected_engine_label(&self) -> String {
+        self.engine_options
+            .iter()
+            .find(|entry| entry.path == self.engine_path)
+            .map(|entry| entry.label.clone())
+            .unwrap_or_else(|| self.session.committed_engine().metadata.name.clone())
+    }
+
+    fn engine_selector(&mut self, ui: &mut egui::Ui) {
+        let dirty = self.session.is_dirty();
+        ui.label("Engine");
+        let mut selected_path = self.engine_path.clone();
+        let selector = ui.add_enabled_ui(!dirty, |ui| {
+            egui::ComboBox::from_id_salt("engine_selector")
+                .selected_text(self.selected_engine_label())
+                .show_ui(ui, |ui| {
+                    for entry in &self.engine_options {
+                        ui.selectable_value(&mut selected_path, entry.path.clone(), &entry.label);
+                    }
+                });
+        });
+        if dirty {
+            selector
+                .response
+                .on_hover_text("Write or undo pending changes before switching engines");
+        }
+        if selected_path != self.engine_path {
+            self.load_engine(selected_path);
         }
     }
 
@@ -175,13 +259,14 @@ impl TuningGuiApp {
             self.session.committed_engine(),
             self.session.committed_handling(),
         );
-        self.load_status = format!(
-            "{} | {}",
-            describe_source("engine", &loaded.engine_source),
-            describe_source("handling", &loaded.handling_source)
-        );
+        self.load_status = load_status(&loaded.engine_source, &loaded.handling_source);
         self.session.replace(loaded.definition, loaded.handling);
         self.profile = self.profile_for_committed();
+        align_controls_to_engine(
+            &mut self.controls,
+            self.session.committed_engine(),
+            self.session.committed_handling(),
+        );
         self.reset_engine();
     }
 
@@ -360,6 +445,7 @@ impl TuningGuiApp {
 
     fn tuning_controls(&mut self, ui: &mut egui::Ui) {
         ui.heading("Tuning");
+        self.engine_selector(ui);
         ui.small(self.load_status.clone());
         ui.horizontal(|ui| {
             let dirty = self.session.is_dirty();

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Instant;
 
 use eframe::egui::{self, Color32, RichText};
@@ -5,6 +6,10 @@ use egui_plot::{Line, Plot, PlotPoints, Points};
 
 use enginesim::engine_config::EngineDefinition;
 use enginesim::engine_handling::EngineHandlingDefinition;
+use enginesim::engine_loader::{
+    EngineCatalogEntry, LoadSource, default_engine_directory, default_engine_path,
+    discover_engine_files, load_engine_and_handling,
+};
 use enginesim::profiles::SimulationProfile;
 use enginesim::single_cylinder::{SingleCylinderEngine, rad_per_s_to_rpm};
 use enginesim::telemetry::{
@@ -29,6 +34,8 @@ fn main() -> eframe::Result<()> {
 }
 
 struct EngineGuiApp {
+    engine_path: PathBuf,
+    engine_options: Vec<EngineCatalogEntry>,
     definition: EngineDefinition,
     handling: EngineHandlingDefinition,
     profile: SimulationProfile,
@@ -39,27 +46,71 @@ struct EngineGuiApp {
     running: bool,
     redline_cut_remaining_seconds: f64,
     last_wall_clock: Instant,
+    load_status: String,
+}
+
+fn bundled_definition() -> EngineDefinition {
+    EngineDefinition::from_json_str(include_str!("../../data/engines/gn250.json"))
+        .expect("bundled GN250 JSON should parse")
+}
+
+fn bundled_handling() -> EngineHandlingDefinition {
+    EngineHandlingDefinition::from_json_str(include_str!("../../data/engines/gn250.handling.json"))
+        .expect("bundled GN250 handling JSON should parse")
+}
+
+fn engine_options_or_default() -> Vec<EngineCatalogEntry> {
+    match discover_engine_files(&default_engine_directory()) {
+        Ok(entries) if !entries.is_empty() => entries,
+        _ => vec![EngineCatalogEntry::from_path(default_engine_path())],
+    }
+}
+
+fn initial_engine_path(options: &[EngineCatalogEntry]) -> PathBuf {
+    let default_path = default_engine_path();
+    options
+        .iter()
+        .find(|entry| entry.path == default_path)
+        .or_else(|| options.first())
+        .map(|entry| entry.path.clone())
+        .unwrap_or(default_path)
+}
+
+fn describe_source(label: &str, source: &LoadSource) -> String {
+    match source {
+        LoadSource::Disk(path) => format!("{label}: {}", path.display()),
+        LoadSource::BundledFallback { .. } => format!("{label}: bundled default"),
+    }
+}
+
+fn load_status(engine_source: &LoadSource, handling_source: &LoadSource) -> String {
+    format!(
+        "{} | {}",
+        describe_source("engine", engine_source),
+        describe_source("handling", handling_source)
+    )
 }
 
 impl EngineGuiApp {
     fn new() -> Self {
-        let definition =
-            EngineDefinition::from_json_str(include_str!("../../data/engines/gn250.json"))
-                .expect("bundled GN250 JSON should parse");
-        let handling = EngineHandlingDefinition::from_json_str(include_str!(
-            "../../data/engines/gn250.handling.json"
-        ))
-        .expect("bundled GN250 handling JSON should parse");
-        let profile = default_profile_for_gui(&handling);
-        let controls = EngineControls::default();
+        let engine_options = engine_options_or_default();
+        let engine_path = initial_engine_path(&engine_options);
+        let loaded =
+            load_engine_and_handling(&engine_path, &bundled_definition(), &bundled_handling());
+        let load_status = load_status(&loaded.engine_source, &loaded.handling_source);
+        let profile = default_profile_for_gui(&loaded.handling);
+        let mut controls = EngineControls::default();
+        align_controls_to_engine(&mut controls, &loaded.definition, &loaded.handling);
         let engine =
-            SingleCylinderEngine::from_definition_with_profile(definition.clone(), profile);
-        let telemetry = TelemetryAggregator::new(definition.clone(), controls);
+            SingleCylinderEngine::from_definition_with_profile(loaded.definition.clone(), profile);
+        let telemetry = TelemetryAggregator::new(loaded.definition.clone(), controls);
         let latest_frame = telemetry.snapshot();
 
         Self {
-            definition,
-            handling,
+            engine_path,
+            engine_options,
+            definition: loaded.definition,
+            handling: loaded.handling,
             profile,
             engine,
             controls,
@@ -68,7 +119,49 @@ impl EngineGuiApp {
             running: true,
             redline_cut_remaining_seconds: 0.0,
             last_wall_clock: Instant::now(),
+            load_status,
         }
+    }
+
+    fn load_engine(&mut self, engine_path: PathBuf) {
+        let loaded =
+            load_engine_and_handling(&engine_path, &bundled_definition(), &bundled_handling());
+        self.engine_path = engine_path;
+        self.load_status = load_status(&loaded.engine_source, &loaded.handling_source);
+        self.definition = loaded.definition;
+        self.handling = loaded.handling;
+        self.profile = match self.profile.kind {
+            enginesim::profiles::SimulationProfileKind::RealTime => {
+                default_profile_for_gui(&self.handling)
+            }
+            enginesim::profiles::SimulationProfileKind::Render => SimulationProfile::render(),
+        };
+        align_controls_to_engine(&mut self.controls, &self.definition, &self.handling);
+        self.reset_engine();
+    }
+
+    fn selected_engine_label(&self) -> String {
+        self.engine_options
+            .iter()
+            .find(|entry| entry.path == self.engine_path)
+            .map(|entry| entry.label.clone())
+            .unwrap_or_else(|| self.definition.metadata.name.clone())
+    }
+
+    fn engine_selector(&mut self, ui: &mut egui::Ui) {
+        ui.label("Engine");
+        let mut selected_path = self.engine_path.clone();
+        egui::ComboBox::from_id_salt("engine_selector")
+            .selected_text(self.selected_engine_label())
+            .show_ui(ui, |ui| {
+                for entry in &self.engine_options {
+                    ui.selectable_value(&mut selected_path, entry.path.clone(), &entry.label);
+                }
+            });
+        if selected_path != self.engine_path {
+            self.load_engine(selected_path);
+        }
+        ui.small(self.load_status.clone());
     }
 
     fn reset_engine(&mut self) {
@@ -119,6 +212,18 @@ impl EngineGuiApp {
     }
 }
 
+fn align_controls_to_engine(
+    controls: &mut EngineControls,
+    definition: &EngineDefinition,
+    handling: &EngineHandlingDefinition,
+) {
+    controls.lambda_target = definition.combustion.lambda_target.clamp(0.1, 2.0);
+    controls.dyno_target_rpm = definition.crank.initial_speed_rpm.max(1.0);
+    controls.added_inertia_kg_m2 = controls
+        .added_inertia_kg_m2
+        .clamp(0.0, handling.max_added_inertia_kg_m2.max(0.0));
+}
+
 impl eframe::App for EngineGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.simulate_until_now();
@@ -128,6 +233,8 @@ impl eframe::App for EngineGuiApp {
             .default_width(260.0)
             .show(ctx, |ui| {
                 ui.heading("Controls");
+                self.engine_selector(ui);
+                ui.separator();
                 ui.checkbox(&mut self.running, "Run");
                 if ui.button("Reset").clicked() {
                     self.reset_engine();

@@ -1,0 +1,91 @@
+{
+  "metadata": {
+    "name": "Isuzu 4ZE1 approximation",
+    "manufacturer": "Isuzu",
+    "notes": "Based on data/engines/4ZE1.md. The current engine JSON schema models one 4-stroke cylinder, so this fixture represents one representative cylinder of the inline-four 4ZE1 rather than the full 1-3-4-2 engine. Bore, stroke, compression ratio, idle speed, base ignition timing, intake runner ID, combined runner volume, plenum volume, throttle diameter, exhaust runner ID, exhaust diameter, lambda data, and measured fuel-flow data come from the MD file. Bore and stroke calculate to about 641 cc per cylinder, about 2565 cc total, close to the 2559 cc sheet value. The shared 1.5 L plenum and 61 mm throttle are kept at their physical sizes because the current single-cylinder runner does not model the other three cylinders drawing from the same reservoir. The 1.0 L combined intake runner volume is divided by four to estimate one runner length from the 38 mm runner ID. Connecting rod length, intake close, exhaust timing, valve diameters, crank inertia, and exhaust runner length were not supplied, so they are placeholders. The MD lists intake opening as 13 deg but does not specify the full event set; this fixture uses the current working GN250-style 720-degree timing shape until complete 4ZE1 cam timing is available. Valve effective areas are placeholder aggregate orifice areas close to the assumed one-valve port areas so the larger 4ZE1 cylinder can breathe in the current model. Fuel mass per cycle is a per-cylinder estimate from the measured 4ZE1 fuel-flow table near the torque and power range. The current simulation still uses a single aggregate intake boundary and exhaust boundary, not explicit four-cylinder manifold phasing."
+  },
+  "geometry": {
+    "bore_m": 0.0927,
+    "stroke_m": 0.095,
+    "connecting_rod_length_m": 0.152,
+    "compression_ratio": 8.3
+  },
+  "gas": {
+    "gas_constant_j_per_kg_k": 287.0,
+    "specific_heat_ratio": 1.4,
+    "minimum_mass_kg": 1e-9,
+    "minimum_temperature_k": 1.0
+  },
+  "boundaries": {
+    "intake_pressure_pa": 101325.0,
+    "intake_temperature_k": 300.0,
+    "exhaust_pressure_pa": 101325.0,
+    "exhaust_temperature_k": 700.0,
+    "crankcase_pressure_pa": 101325.0
+  },
+  "intake_exhaust": {
+    "intake_plenum_volume_m3": 0.0015,
+    "throttle_maximum_area_m2": 0.002922466566001905,
+    "idle_throttle_maximum_area_m2": 0.00005,
+    "intake_runner": {
+      "number_of_cells": 8,
+      "total_length_m": 0.22043620926855312,
+      "area_m2": 0.0011341149479459152
+    },
+    "exhaust_runner": {
+      "number_of_cells": 12,
+      "total_length_m": 0.6,
+      "area_m2": 0.0008042477193189871
+    }
+  },
+  "valves": {
+    "intake": {
+      "open_angle_deg": 390.0,
+      "close_angle_deg": 650.0,
+      "valve_diameter_m": 0.045,
+      "valve_count": 1,
+      "max_effective_area_m2": 0.0013,
+      "discharge_coefficient": 0.9
+    },
+    "exhaust": {
+      "open_angle_deg": 148.0,
+      "close_angle_deg": 398.0,
+      "valve_diameter_m": 0.037,
+      "valve_count": 1,
+      "max_effective_area_m2": 0.0009,
+      "discharge_coefficient": 0.85
+    }
+  },
+  "crank": {
+    "moment_of_inertia_kg_m2": 0.08,
+    "initial_speed_rpm": 900.0,
+    "initial_crank_angle_deg": 0.0
+  },
+  "combustion": {
+    "enabled": true,
+    "lambda_target": 0.91,
+    "fuel_mass_per_cycle_kg": 0.000055,
+    "fuel_lower_heating_value_j_per_kg": 44000000.0,
+    "combustion_efficiency": 0.9,
+    "heat_loss_fraction": 0.2,
+    "mixture_limits": {
+      "stoichiometric_air_fuel_ratio": 14.7,
+      "minimum_combustible_air_fuel_ratio": 8.01,
+      "maximum_combustible_air_fuel_ratio": 25.51,
+      "peak_rich_equivalence_ratio": 1.1111111111111112,
+      "peak_lean_equivalence_ratio": 0.95
+    },
+    "spark_timing": {
+      "low_speed_rpm": 900.0,
+      "low_speed_advance_deg_btdc": 12.0,
+      "high_speed_rpm": 4600.0,
+      "high_speed_advance_deg_btdc": 28.0
+    },
+    "ignition_delay_deg": 6.0,
+    "wiebe": {
+      "combustion_duration_rad": 0.7853981633974483,
+      "efficiency_coefficient": 5.0,
+      "shape_factor": 2.0
+    }
+  }
+}

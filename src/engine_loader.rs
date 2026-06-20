@@ -3,6 +3,30 @@ use std::path::{Path, PathBuf};
 use crate::engine_config::EngineDefinition;
 use crate::engine_handling::EngineHandlingDefinition;
 
+pub fn default_engine_directory() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/engines")
+}
+
+pub fn default_engine_path() -> PathBuf {
+    default_engine_directory().join("gn250.json")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineCatalogEntry {
+    pub path: PathBuf,
+    pub label: String,
+}
+
+impl EngineCatalogEntry {
+    pub fn from_path(path: PathBuf) -> Self {
+        let label = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        Self { path, label }
+    }
+}
+
 /// Where a loaded value came from, so the GUI can show whether it is editing
 /// on-disk data or the binary's bundled fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +41,38 @@ impl LoadSource {
     pub fn is_disk(&self) -> bool {
         matches!(self, LoadSource::Disk(_))
     }
+}
+
+pub fn discover_engine_files(engine_dir: &Path) -> Result<Vec<EngineCatalogEntry>, String> {
+    let mut entries = Vec::new();
+    let read_dir = std::fs::read_dir(engine_dir)
+        .map_err(|err| format!("read engine directory {engine_dir:?}: {err}"))?;
+
+    for entry in read_dir {
+        let entry = entry.map_err(|err| format!("read engine directory entry: {err}"))?;
+        let path = entry.path();
+        if is_engine_definition_path(&path) {
+            entries.push(EngineCatalogEntry::from_path(path));
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        a.label
+            .to_ascii_lowercase()
+            .cmp(&b.label.to_ascii_lowercase())
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    Ok(entries)
+}
+
+fn is_engine_definition_path(path: &Path) -> bool {
+    if path.extension().is_none_or(|extension| extension != "json") {
+        return false;
+    }
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    !file_name.ends_with(".handling.json")
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -115,6 +171,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovers_engine_jsons_without_handling_files() {
+        let dir = std::env::temp_dir().join(format!("enginesim_discover_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("alpha.json"), "{}").unwrap();
+        std::fs::write(dir.join("alpha.handling.json"), "{}").unwrap();
+        std::fs::write(dir.join("notes.md"), "").unwrap();
+
+        let entries = discover_engine_files(&dir).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].label, "alpha");
+        assert_eq!(entries[0].path, dir.join("alpha.json"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn handling_path_is_sibling_of_engine_path() {
