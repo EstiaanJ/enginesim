@@ -319,6 +319,9 @@ Status note: the implementation has already moved through Phase 5. The earlier p
   - [x] Add CFL stability tests or assertions for configured timesteps.
   - [x] Add mesh-refinement convergence checks for pressure-wave timing and amplitude.
   - [x] Add regression baselines for intake/exhaust pressure traces once runner, plenum and exhaust geometry are configured data rather than placeholder defaults.
+  
+  - [ ] engine_gui Exhaust exit pressure pulse with respect to engine angle
+  - [ ] engine_gui Exhaust exit pressure with respect to time
 
 ## Phase 6: Losses, Controls And Calibration
 

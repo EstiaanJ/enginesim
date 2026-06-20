@@ -1,7 +1,7 @@
 use crate::physics::chamber::{
     ChamberBoundary, ChamberProperties, ChamberSpeciesMasses, ChamberState,
-    DRY_AIR_OXYGEN_MASS_FRACTION, chamber_pressure_pa, mixture_chamber_properties,
-    species_internal_energy_j,
+    DRY_AIR_OXYGEN_MASS_FRACTION, chamber_pressure_pa, integrate_internal_energy_rk4,
+    mixture_chamber_properties, species_internal_energy_j,
 };
 use crate::combustion::{
     BurnDurationInputs, IgnitionDelayInputs, WiebeParameters, air_fuel_ratio, burn_duration_rad,
@@ -460,11 +460,6 @@ impl SingleCylinderEngine {
         );
         let combustion_heat_added_j = combustion_step.heat_added_j;
         self.sync_chamber_mass_from_species();
-        let chamber_boundary = ChamberBoundary {
-            volume_m3: start_volume_m3,
-            volume_rate_m3_per_s,
-            heat_rate_w: combustion_heat_added_j / timestep_seconds,
-        };
         let pipe_properties = pipe_properties(&self.definition);
         let plenum_pressure_pa = self.intake_plenum.pressure_pa(plenum_fallback_properties);
         let mut plenum_to_runner_flux = pipe_cell_to_chamber_orifice_flux(
@@ -484,18 +479,17 @@ impl SingleCylinderEngine {
             plenum_to_runner_flux.scaled(-1.0),
             timestep_seconds,
         );
+        let plenum_volume_m3 = self.intake_plenum.volume_m3;
         self.intake_plenum.chamber_state = step_chamber_with_pipe_fluxes(
             &mut self.intake_plenum.species,
             self.intake_plenum.chamber_state,
-            ChamberBoundary {
-                volume_m3: self.intake_plenum.volume_m3,
-                volume_rate_m3_per_s: 0.0,
-                heat_rate_w: 0.0,
-            },
             plenum_fallback_properties,
             [plenum_to_runner_flux, PipeBoundaryFlux::zero()],
             0.0,
             timestep_seconds,
+            // Fixed-volume plenum: no piston work, so RK4 reduces to exact
+            // linear integration of the constant flux/heat rates.
+            |_| (plenum_volume_m3, 0.0),
         );
         let mut intake_flux = pipe_cell_to_chamber_orifice_flux(
             *self
@@ -546,11 +540,25 @@ impl SingleCylinderEngine {
         self.chamber_state = step_chamber_with_pipe_fluxes(
             &mut self.chamber_species,
             self.chamber_state,
-            chamber_boundary,
             chamber_properties(&self.definition),
             [intake_flux, exhaust_flux],
             combustion_heat_added_j,
             timestep_seconds,
+            // Sample the moving cylinder volume at each RK4 stage by advancing
+            // the crank angle across the step at the fixed step speed.
+            |fraction| {
+                let angle_rad = normalize_cycle_angle_rad(
+                    start_angle_rad + delta_angle_rad * fraction,
+                );
+                (
+                    cylinder_volume_m3(&self.definition, angle_rad),
+                    cylinder_volume_rate_m3_per_s(
+                        &self.definition,
+                        angle_rad,
+                        crank_speed_rad_per_s,
+                    ),
+                )
+            },
         );
         self.sync_chamber_mass_from_species();
 
@@ -1231,11 +1239,11 @@ fn chamber_properties(definition: &EngineDefinition) -> ChamberProperties {
 fn step_chamber_with_pipe_fluxes(
     species: &mut ChamberSpeciesMasses,
     state: ChamberState,
-    boundary: ChamberBoundary,
     fallback_properties: ChamberProperties,
     mut fluxes: [PipeBoundaryFlux; 2],
     heat_added_j: f64,
     timestep_seconds: f64,
+    volume_at: impl Fn(f64) -> (f64, f64),
 ) -> ChamberState {
     limit_chamber_outflow_fluxes(
         species.total_mass_kg(),
@@ -1248,15 +1256,23 @@ fn step_chamber_with_pipe_fluxes(
         properties.gas_constant_j_per_kg_k,
         properties.specific_heat_ratio,
     );
-    let pressure_pa = chamber_pressure_pa(state, boundary, properties);
     let internal_energy_j = state.mass_kg * cv_j_per_kg_k * state.temperature_k;
-    let flux_energy_delta_j = fluxes
-        .iter()
-        .map(|flux| flux.energy_w * timestep_seconds)
-        .sum::<f64>();
-    let piston_work_j = pressure_pa * boundary.volume_rate_m3_per_s * timestep_seconds;
-    let updated_internal_energy_j =
-        (internal_energy_j + flux_energy_delta_j + heat_added_j - piston_work_j).max(0.0);
+    let energy_flux_rate_w = fluxes.iter().map(|flux| flux.energy_w).sum::<f64>();
+    let heat_rate_w = if timestep_seconds > 0.0 {
+        heat_added_j / timestep_seconds
+    } else {
+        0.0
+    };
+    // RK4-integrate the internal energy over the moving cylinder volume instead
+    // of the previous explicit-Euler piston-work term (P at the start angle).
+    let updated_internal_energy_j = integrate_internal_energy_rk4(
+        internal_energy_j,
+        energy_flux_rate_w,
+        heat_rate_w,
+        properties.specific_heat_ratio,
+        timestep_seconds,
+        volume_at,
+    );
 
     for flux in fluxes {
         species.oxygen_kg += flux.species_kg_per_s.oxygen_kg * timestep_seconds;

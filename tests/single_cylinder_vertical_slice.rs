@@ -813,8 +813,8 @@ fn split_config_preserves_fixed_speed_run_baseline() {
     let definition = gn250_definition();
     let summary = run_fixed_speed_cycles(&definition, 2500.0, 4);
 
-    assert_close(summary.mean_indicated_torque_nm, 7.4526910000, 1.0e-6);
-    assert_close(summary.indicated_work_j, 374.6131180000, 1.0e-6);
+    assert_close(summary.mean_indicated_torque_nm, 7.3974290, 1.0e-6);
+    assert_close(summary.indicated_work_j, 371.8353382, 1.0e-6);
 }
 
 #[test]

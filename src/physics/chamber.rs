@@ -489,6 +489,44 @@ pub fn step_rk4_with_stage_inputs(
     )
 }
 
+/// RK4-integrate the chamber's total internal energy over one step with a
+/// moving boundary, treating boundary-flow energy and heat release as constant
+/// rates while evaluating the piston-work term `P·dV/dt` at each RK4 stage.
+///
+/// `volume_at(fraction)` returns `(volume_m3, volume_rate_m3_per_s)` at the
+/// given fraction of the step (0 = start, 1 = end), so the moving cylinder
+/// volume is sampled at the stage times rather than held at the start value
+/// (which is what an explicit Euler step does). Pressure follows from the gas
+/// state as `P = (gamma - 1)·U/V`, so the ODE is
+/// `dU/dt = energy_flux_rate + heat_rate - (gamma - 1)·U/V(t)·dV/dt(t)`.
+pub fn integrate_internal_energy_rk4(
+    initial_internal_energy_j: f64,
+    energy_flux_rate_w: f64,
+    heat_rate_w: f64,
+    specific_heat_ratio: f64,
+    timestep_seconds: f64,
+    volume_at: impl Fn(f64) -> (f64, f64),
+) -> f64 {
+    if timestep_seconds <= 0.0 {
+        return initial_internal_energy_j.max(0.0);
+    }
+    let gamma_minus_one = (specific_heat_ratio - 1.0).max(0.0);
+    let derivative = |fraction: f64, internal_energy_j: f64| -> f64 {
+        let (volume_m3, volume_rate_m3_per_s) = volume_at(fraction);
+        let volume_m3 = volume_m3.max(f64::MIN_POSITIVE);
+        let pressure_pa = gamma_minus_one * internal_energy_j.max(0.0) / volume_m3;
+        energy_flux_rate_w + heat_rate_w - pressure_pa * volume_rate_m3_per_s
+    };
+
+    let dt = timestep_seconds;
+    let u0 = initial_internal_energy_j;
+    let k1 = derivative(0.0, u0);
+    let k2 = derivative(0.5, u0 + 0.5 * dt * k1);
+    let k3 = derivative(0.5, u0 + 0.5 * dt * k2);
+    let k4 = derivative(1.0, u0 + dt * k3);
+    (u0 + dt / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)).max(0.0)
+}
+
 pub fn chamber_pressure_pa(
     state: ChamberState,
     boundary: ChamberBoundary,
@@ -542,5 +580,48 @@ fn clamp_state(state: ChamberState, properties: ChamberProperties) -> ChamberSta
         temperature_k: state
             .temperature_k
             .max(properties.minimum_temperature_k.max(0.0)),
+    }
+}
+
+#[cfg(test)]
+mod rk4_tests {
+    use super::*;
+
+    #[test]
+    fn integrate_internal_energy_rk4_matches_isentropic_compression() {
+        // Adiabatic, no boundary flow: U * V^(gamma-1) is conserved regardless
+        // of path, so a 2:1 compression gives U2 = U1 * (V1/V2)^(gamma-1).
+        let gamma = 1.4;
+        let u1 = 1000.0;
+        let v1 = 1.0;
+        let v2 = 0.5;
+        let dt = 1.0;
+        let volume_rate = (v2 - v1) / dt; // constant dV/dt for V linear in time
+        let volume_at = |fraction: f64| (v1 + (v2 - v1) * fraction, volume_rate);
+
+        let u2_rk4 =
+            integrate_internal_energy_rk4(u1, 0.0, 0.0, gamma, dt, volume_at);
+        let u2_analytic = u1 * (v1 / v2).powf(gamma - 1.0);
+        // A single explicit-Euler step (start pressure only) for comparison.
+        let u2_euler = u1 - (gamma - 1.0) * u1 / v1 * volume_rate * dt;
+
+        let rk4_error = (u2_rk4 - u2_analytic).abs();
+        let euler_error = (u2_euler - u2_analytic).abs();
+        assert!(
+            rk4_error / u2_analytic < 0.01,
+            "RK4 within 1% of analytic: rk4={u2_rk4}, analytic={u2_analytic}"
+        );
+        assert!(
+            rk4_error < euler_error * 0.2,
+            "RK4 should be far more accurate than Euler: rk4_err={rk4_error}, euler_err={euler_error}"
+        );
+    }
+
+    #[test]
+    fn integrate_internal_energy_rk4_is_exact_linear_for_fixed_volume() {
+        // No piston work (constant volume): pure linear accumulation of the
+        // constant flux + heat rate.
+        let u2 = integrate_internal_energy_rk4(500.0, 20.0, 5.0, 1.4, 2.0, |_| (0.001, 0.0));
+        assert!((u2 - (500.0 + (20.0 + 5.0) * 2.0)).abs() < 1.0e-9);
     }
 }
