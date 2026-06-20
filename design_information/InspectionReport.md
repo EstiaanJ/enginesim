@@ -5,6 +5,51 @@
 
 ---
 
+## Status update — 2026-06-20 (branch `inspection-fixes`)
+
+The report was triaged against the current code (it has since advanced past the
+config split and `b476674` fueling fix). Outcomes:
+
+**Already fixed since the report (stale — verified, no action needed):**
+- **B1** — valve `discharge_coefficient` is now applied to the valve effective
+  area (`single_cylinder.rs`) and the plenum throttle uses `1.0`; a test covers it.
+- **B2 / I5** — indicated torque and the reported `cylinder_pressure_pa` both use
+  `end_pressure_pa` now (same instant).
+- **B3** — `air_flow_g_per_s` no longer clamps with `.max(0.0)`; a backflow-sign
+  test exists.
+- **B4** — lean (lambda 1.3, 3000 rpm) indicated torque is now positive with the
+  current fixture calibration; the regression baseline was refreshed.
+- **O2** — `SimulationDefinition` was removed; `timestep`, `redline_cut_time` and
+  `max_added_inertia` now live in `EngineHandlingDefinition` (correctly categorised).
+
+**Implemented on this branch (safe, output-neutral cleanups):**
+- **O3 / S2** — removed the dead `pipe_cell_to_chamber_flux`; its one test now
+  uses the orifice variant at full area.
+- **O5 / S1** — derived `Default` for `PendingFrameAccumulator`; the four verbose
+  initializers collapse to `::default()`.
+- **O6 / S3** — single source of truth `IntakeExhaustDefinition::effective_idle_throttle_area_m2()`,
+  used by both `single_cylinder` and `telemetry`.
+- **O7** — documented `maximum_combustible_air_fuel_ratio` (lean limit phi ≈ 0.563).
+- **O8 / S4** — replaced the `#[path = "physics/…"]` aliases with a real
+  `pub mod physics { … }`; all references now use `crate::physics::*`.
+
+**Deferred (change simulation outputs and/or need their own calibrated PR):**
+- **B5** (throttle `minimum_area_m2` side-channel) — current values are correct;
+  only the API is non-obvious. API-clarity refactor, low priority.
+- **B6** (combustion-event-ratio resolution) — already correct for a single
+  cylinder (one combustion stroke per cycle → windowed average is the ratio);
+  finer counting matters at Phase 4 multi-cylinder.
+- **O1 / I6** (make `one_d_mesh_cells_per_meter` authoritative) — conflicts with
+  the new design where users tune `number_of_cells` per runner in JSON; needs a
+  design decision before overriding that.
+- **O4 / S5** (fold `step_chamber_with_pipe_fluxes` into `chamber.rs`) — risks
+  shifting numeric outputs / regression baselines; do as a separately verified refactor.
+- **I1** (RK4 main integration), **I2** (wall heat transfer), **I3** (piston/rod
+  inertia), **I4** (friction / FMEP) — physics features that change outputs and
+  require re-baselining; each warrants its own PR (I4 is the highest-value next step).
+
+---
+
 ## Bugs
 
 ### B1 — Valve discharge coefficient is dead data

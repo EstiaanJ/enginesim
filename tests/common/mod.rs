@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use enginesim::chamber::{ChamberBoundary, ChamberProperties, ChamberState, FlowBoundary};
-use enginesim::consts::{GAMMA, R};
+use enginesim::physics::chamber::{ChamberBoundary, ChamberProperties, ChamberState, FlowBoundary};
+use enginesim::physics::consts::{GAMMA, R};
 
 pub const EPSILON: f64 = 1.0e-9;
 

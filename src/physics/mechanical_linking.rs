@@ -1,5 +1,5 @@
-use crate::linear_mass_integrator::{LinearMassState, update_linear_mass};
-use crate::rotational_mass_integrator::{
+use crate::physics::linear_mass_integrator::{LinearMassState, update_linear_mass};
+use crate::physics::rotational_mass_integrator::{
     RotationalMassConfig, RotationalMassState, update_rotational_mass,
 };
 

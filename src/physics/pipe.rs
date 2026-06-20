@@ -1,11 +1,11 @@
-use crate::chamber::{
+use crate::physics::chamber::{
     ChamberBoundary, ChamberProperties, ChamberSpeciesMasses, DRY_AIR_INERT_MASS_FRACTION,
     DRY_AIR_OXYGEN_MASS_FRACTION, chamber_pressure_pa, mixture_chamber_properties,
 };
-use crate::flow::{
+use crate::physics::flow::{
     FlowEndpoint, FlowOrifice, GasFlowProperties, bidirectional_isentropic_mass_flow,
 };
-use crate::gas::{cp, cv};
+use crate::physics::gas::{cp, cv};
 use crate::throttle;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -243,7 +243,7 @@ pub struct PipeStepBoundaryFluxes {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlenumState {
     pub volume_m3: f64,
-    pub chamber_state: crate::chamber::ChamberState,
+    pub chamber_state: crate::physics::chamber::ChamberState,
     pub species: ChamberSpeciesMasses,
 }
 
@@ -273,7 +273,7 @@ impl PlenumState {
 
         Self {
             volume_m3,
-            chamber_state: crate::chamber::ChamberState {
+            chamber_state: crate::physics::chamber::ChamberState {
                 mass_kg,
                 temperature_k,
             },
@@ -575,23 +575,6 @@ pub fn apply_boundary_flux_to_cell(
     apply_flux(cell, flux_into_cell, timestep_seconds);
 }
 
-pub fn pipe_cell_to_chamber_flux(
-    pipe_cell: PipeCellState,
-    chamber_pressure_pa: f64,
-    chamber_temperature_k: f64,
-    geometry: PipeCellGeometry,
-    properties: GasFlowProperties,
-) -> PipeBoundaryFlux {
-    let chamber_cell = PipeCellState::from_pressure_temperature_velocity(
-        chamber_pressure_pa,
-        chamber_temperature_k,
-        0.0,
-        geometry,
-        properties,
-    );
-    rusanov_flux(pipe_cell, chamber_cell, geometry, properties)
-}
-
 fn physical_flux_density(
     cell: PipeCellState,
     geometry: PipeCellGeometry,
@@ -886,7 +869,14 @@ mod tests {
         pipe.species.oxygen_kg = pipe.mass_kg * 0.20;
         pipe.species.inert_kg = pipe.mass_kg * 0.78;
         pipe.species.products_kg = 0.0;
-        let flux = pipe_cell_to_chamber_flux(pipe, 100_000.0, 300.0, geometry(), properties());
+        let flux = pipe_cell_to_chamber_orifice_flux(
+            pipe,
+            100_000.0,
+            300.0,
+            geometry(),
+            geometry().area_m2,
+            properties(),
+        );
 
         assert!(flux.mass_kg_per_s > 0.0);
         assert_close(

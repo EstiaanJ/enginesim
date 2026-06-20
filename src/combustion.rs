@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::chamber::{ChamberSpeciesMasses, DRY_AIR_OXYGEN_MASS_FRACTION};
+use crate::physics::chamber::{ChamberSpeciesMasses, DRY_AIR_OXYGEN_MASS_FRACTION};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct MixtureLimits {
@@ -14,7 +14,11 @@ pub struct MixtureLimits {
 pub fn default_mixture_limits() -> MixtureLimits {
     MixtureLimits {
         stoichiometric_air_fuel_ratio: 14.7,
+        // Rich flammability limit at equivalence ratio phi = 1.96 (AFR = 14.7 / 1.96).
         minimum_combustible_air_fuel_ratio: 14.7 / 1.96,
+        // Lean flammability limit at equivalence ratio phi ~= 0.563
+        // (AFR = 14.7 / 0.563 = 26.110...). Kept as the exact literal so the
+        // default mixture limits are bit-stable across builds.
         maximum_combustible_air_fuel_ratio: 26.1101243339254,
         peak_rich_equivalence_ratio: 1.10,
         peak_lean_equivalence_ratio: 0.95,
@@ -482,31 +486,31 @@ mod tests {
         let initial_species = species;
         let volume_m3 = 0.001;
         let temperature_k = 700.0;
-        let fallback = crate::chamber::ChamberProperties {
+        let fallback = crate::physics::chamber::ChamberProperties {
             gas_constant_j_per_kg_k: 287.0,
             specific_heat_ratio: 1.4,
             minimum_mass_kg: 1.0e-9,
             minimum_temperature_k: 1.0,
         };
-        let initial_properties = crate::chamber::mixture_chamber_properties(species, fallback);
-        let initial_pressure = crate::gas::pressure(
+        let initial_properties = crate::physics::chamber::mixture_chamber_properties(species, fallback);
+        let initial_pressure = crate::physics::gas::pressure(
             species.total_mass_kg(),
             temperature_k,
             volume_m3,
             initial_properties.gas_constant_j_per_kg_k,
         );
         let initial_energy =
-            crate::chamber::species_internal_energy_j(species, temperature_k, fallback);
+            crate::physics::chamber::species_internal_energy_j(species, temperature_k, fallback);
 
         let conversion = burn_species(&mut species, 0.0001, 14.7, 44.0e6, 1.0, 0.0);
-        let updated_properties = crate::chamber::mixture_chamber_properties(species, fallback);
+        let updated_properties = crate::physics::chamber::mixture_chamber_properties(species, fallback);
         let updated_temperature = (initial_energy + conversion.released_heat_j)
             / (species.total_mass_kg()
-                * crate::gas::cv(
+                * crate::physics::gas::cv(
                     updated_properties.gas_constant_j_per_kg_k,
                     updated_properties.specific_heat_ratio,
                 ));
-        let updated_pressure = crate::gas::pressure(
+        let updated_pressure = crate::physics::gas::pressure(
             species.total_mass_kg(),
             updated_temperature,
             volume_m3,

@@ -1,5 +1,5 @@
-use crate::flow::isentropic_mass_flow;
-use crate::gas::{cp, cv, pressure, temperature_from_internal_energy_k};
+use crate::physics::flow::isentropic_mass_flow;
+use crate::physics::gas::{cp, cv, pressure, temperature_from_internal_energy_k};
 
 pub const DRY_AIR_OXYGEN_MASS_FRACTION: f64 = 0.232;
 pub const DRY_AIR_INERT_MASS_FRACTION: f64 = 1.0 - DRY_AIR_OXYGEN_MASS_FRACTION;

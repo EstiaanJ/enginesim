@@ -4,11 +4,11 @@ use common::{
     EPSILON, air_properties, assert_approx_eq, chamber_state_at_air_pressure, closed_flow,
     fixed_volume_boundary,
 };
-use enginesim::chamber::{
+use enginesim::physics::chamber::{
     ChamberBoundary, ChamberRk4StageInputs, FlowBoundary, chamber_derivatives, chamber_pressure_pa,
     step_euler, step_rk4, step_rk4_with_stage_inputs,
 };
-use enginesim::gas::{cp, cv};
+use enginesim::physics::gas::{cp, cv};
 
 #[test]
 fn fixed_volume_heat_addition_increases_temperature_by_energy_over_mass_cv() {

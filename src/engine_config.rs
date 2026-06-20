@@ -66,6 +66,18 @@ pub struct IntakeExhaustDefinition {
     pub exhaust_runner: PipeDefinition,
 }
 
+impl IntakeExhaustDefinition {
+    /// Effective maximum idle-throttle bypass area, falling back to 10% of the
+    /// main throttle area when not explicitly configured. Single source of truth
+    /// shared by the runner (`single_cylinder`) and the GUI control mapping
+    /// (`telemetry`) so the fallback cannot drift between them.
+    pub fn effective_idle_throttle_area_m2(&self) -> f64 {
+        self.idle_throttle_maximum_area_m2
+            .unwrap_or(self.throttle_maximum_area_m2 * 0.10)
+            .max(0.0)
+    }
+}
+
 impl Default for IntakeExhaustDefinition {
     fn default() -> Self {
         Self {

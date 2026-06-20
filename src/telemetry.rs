@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::chamber::ChamberSpeciesMasses;
+use crate::physics::chamber::ChamberSpeciesMasses;
 use crate::engine_config::EngineDefinition;
 use crate::engine_handling::EngineHandlingDefinition;
 use crate::profiles::SimulationProfile;
@@ -149,11 +149,7 @@ impl EngineControls {
             .intake_exhaust
             .throttle_maximum_area_m2
             .max(1.0e-6);
-        let maximum_idle_area_m2 = definition
-            .intake_exhaust
-            .idle_throttle_maximum_area_m2
-            .unwrap_or(throttle_area_m2 * 0.10)
-            .max(0.0);
+        let maximum_idle_area_m2 = definition.intake_exhaust.effective_idle_throttle_area_m2();
         let requested_area_m2 = throttle_area_m2 * throttle_position.powi(2)
             + maximum_idle_area_m2 * idle_throttle_fraction.powi(2);
 
@@ -391,7 +387,7 @@ struct EngineDataFrame {
     exhaust_lambda: TelemetryScalar,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 struct PendingFrameAccumulator {
     duration_seconds: f64,
     rpm_weighted_sum: f64,
@@ -782,32 +778,8 @@ impl TelemetryAggregator {
         Self {
             definition,
             controls,
-            pending_engine_panel: PendingFrameAccumulator {
-                duration_seconds: 0.0,
-                rpm_weighted_sum: 0.0,
-                torque_weighted_sum: 0.0,
-                power_weighted_sum: 0.0,
-                fuel_flow_weighted_sum: 0.0,
-                air_flow_weighted_sum: 0.0,
-                bmep_weighted_sum: 0.0,
-                volumetric_efficiency_weighted_sum: 0.0,
-                map_weighted_sum: 0.0,
-                chamber_lambda: ScalarFrameAccumulator::default(),
-                exhaust_lambda: ScalarFrameAccumulator::default(),
-            },
-            pending_time_plot: PendingFrameAccumulator {
-                duration_seconds: 0.0,
-                rpm_weighted_sum: 0.0,
-                torque_weighted_sum: 0.0,
-                power_weighted_sum: 0.0,
-                fuel_flow_weighted_sum: 0.0,
-                air_flow_weighted_sum: 0.0,
-                bmep_weighted_sum: 0.0,
-                volumetric_efficiency_weighted_sum: 0.0,
-                map_weighted_sum: 0.0,
-                chamber_lambda: ScalarFrameAccumulator::default(),
-                exhaust_lambda: ScalarFrameAccumulator::default(),
-            },
+            pending_engine_panel: PendingFrameAccumulator::default(),
+            pending_time_plot: PendingFrameAccumulator::default(),
             elapsed_since_engine_panel_publish_seconds: 0.0,
             elapsed_since_time_publish_seconds: 0.0,
             elapsed_since_angle_publish_seconds: 0.0,
@@ -858,19 +830,7 @@ impl TelemetryAggregator {
             if let Some(frame) = self.pending_engine_panel.finalize() {
                 self.published_engine_frames.push(frame);
             }
-            self.pending_engine_panel = PendingFrameAccumulator {
-                duration_seconds: 0.0,
-                rpm_weighted_sum: 0.0,
-                torque_weighted_sum: 0.0,
-                power_weighted_sum: 0.0,
-                fuel_flow_weighted_sum: 0.0,
-                air_flow_weighted_sum: 0.0,
-                bmep_weighted_sum: 0.0,
-                volumetric_efficiency_weighted_sum: 0.0,
-                map_weighted_sum: 0.0,
-                chamber_lambda: ScalarFrameAccumulator::default(),
-                exhaust_lambda: ScalarFrameAccumulator::default(),
-            };
+            self.pending_engine_panel = PendingFrameAccumulator::default();
             self.elapsed_since_engine_panel_publish_seconds = 0.0;
             self.elapsed_since_angle_publish_seconds = 0.0;
             self.elapsed_since_rpm_publish_seconds = 0.0;
@@ -885,19 +845,7 @@ impl TelemetryAggregator {
                     torque_nm: frame.torque_nm,
                 });
             }
-            self.pending_time_plot = PendingFrameAccumulator {
-                duration_seconds: 0.0,
-                rpm_weighted_sum: 0.0,
-                torque_weighted_sum: 0.0,
-                power_weighted_sum: 0.0,
-                fuel_flow_weighted_sum: 0.0,
-                air_flow_weighted_sum: 0.0,
-                bmep_weighted_sum: 0.0,
-                volumetric_efficiency_weighted_sum: 0.0,
-                map_weighted_sum: 0.0,
-                chamber_lambda: ScalarFrameAccumulator::default(),
-                exhaust_lambda: ScalarFrameAccumulator::default(),
-            };
+            self.pending_time_plot = PendingFrameAccumulator::default();
             self.elapsed_since_time_publish_seconds = 0.0;
         }
 
@@ -1088,7 +1036,7 @@ fn points_from_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chamber::ChamberSpeciesMasses;
+    use crate::physics::chamber::ChamberSpeciesMasses;
     use crate::engine_config::EngineDefinition;
     use crate::single_cylinder::rad_per_s_to_rpm;
 

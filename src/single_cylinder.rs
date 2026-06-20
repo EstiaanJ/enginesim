@@ -1,4 +1,4 @@
-use crate::chamber::{
+use crate::physics::chamber::{
     ChamberBoundary, ChamberProperties, ChamberSpeciesMasses, ChamberState,
     DRY_AIR_OXYGEN_MASS_FRACTION, chamber_pressure_pa, mixture_chamber_properties,
     species_internal_energy_j,
@@ -14,9 +14,9 @@ use crate::engine_geometry::{
     slider_crank_dx_dtheta_m_per_rad, slider_crank_volume_rate_m3_per_s,
 };
 use crate::engine_handling::EngineHandlingDefinition;
-use crate::flow::GasFlowProperties;
-use crate::gas::cv;
-use crate::pipe::{
+use crate::physics::flow::GasFlowProperties;
+use crate::physics::gas::cv;
+use crate::physics::pipe::{
     Pipe1D, PipeBoundary, PipeBoundaryFlux, PipeCellGeometry, PlenumState, ThrottlePlenumInput,
     apply_boundary_flux_to_cell, pipe_cell_to_chamber_orifice_flux,
 };
@@ -387,7 +387,8 @@ impl SingleCylinderEngine {
             .intake_exhaust
             .throttle_maximum_area_m2
             .max(1.0e-6);
-        let idle_throttle_maximum_area_m2 = idle_throttle_maximum_area_m2(&self.definition);
+        let idle_throttle_maximum_area_m2 =
+            self.definition.intake_exhaust.effective_idle_throttle_area_m2();
         let throttle_effective_area_m2 =
             if let Some(area_fraction) = inputs.throttle_effective_area_fraction {
                 (throttle_maximum_area_m2 + idle_throttle_maximum_area_m2)
@@ -1410,14 +1411,6 @@ fn positive_intake_air_delta_kg(
         / DRY_AIR_OXYGEN_MASS_FRACTION
 }
 
-fn idle_throttle_maximum_area_m2(definition: &EngineDefinition) -> f64 {
-    definition
-        .intake_exhaust
-        .idle_throttle_maximum_area_m2
-        .unwrap_or(definition.intake_exhaust.throttle_maximum_area_m2 * 0.10)
-        .max(0.0)
-}
-
 fn exhaust_lambda_from_species(
     species: ChamberSpeciesMasses,
     stoichiometric_air_fuel_ratio: f64,
@@ -1536,7 +1529,7 @@ fn gas_force_n(definition: &EngineDefinition, cylinder_pressure_pa: f64) -> f64 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chamber::{
+    use crate::physics::chamber::{
         ChamberDerivatives, ChamberSpeciesMasses, FlowBoundary, chamber_derivatives,
     };
 

@@ -1,25 +1,22 @@
-#[path = "physics/chamber.rs"]
-pub mod chamber;
+pub mod physics {
+    //! Low-level physics primitives. The submodule files live in `src/physics/`,
+    //! so this mirrors the on-disk layout for tooling and `use` paths.
+    pub mod chamber;
+    pub mod consts;
+    pub mod flow;
+    pub mod gas;
+    pub mod linear_mass_integrator;
+    pub mod mechanical_linking;
+    pub mod pipe;
+    pub mod rotational_mass_integrator;
+}
+
 pub mod combustion;
-#[path = "physics/consts.rs"]
-pub mod consts;
 pub mod engine_config;
 pub mod engine_geometry;
 pub mod engine_handling;
 pub mod engine_loader;
-#[path = "physics/flow.rs"]
-pub mod flow;
-#[path = "physics/gas.rs"]
-pub mod gas;
-#[path = "physics/linear_mass_integrator.rs"]
-pub mod linear_mass_integrator;
-#[path = "physics/mechanical_linking.rs"]
-pub mod mechanical_linking;
-#[path = "physics/pipe.rs"]
-pub mod pipe;
 pub mod profiles;
-#[path = "physics/rotational_mass_integrator.rs"]
-pub mod rotational_mass_integrator;
 pub mod sign_conventions;
 pub mod simulation;
 pub mod single_cylinder;
