@@ -1,0 +1,72 @@
+{
+  "metadata": {
+    "name": "Suzuki GN250 approximation",
+    "manufacturer": "Suzuki",
+    "notes": "Based on data/engines/250cc.md plus supplied GN250 calibration notes. Valve timing is converted to the local 720-degree convention. Intake/exhaust are aggregated as one boundary each even though the real engine has two intake and two exhaust valves. Effective flow areas remain placeholders until lift/throat data is available."
+  },
+  "geometry": {
+    "bore_m": 0.072,
+    "stroke_m": 0.0612,
+    "connecting_rod_length_m": 0.115,
+    "compression_ratio": 8.9
+  },
+  "gas": {
+    "gas_constant_j_per_kg_k": 287.0,
+    "specific_heat_ratio": 1.4,
+    "minimum_mass_kg": 1e-9,
+    "minimum_temperature_k": 1.0
+  },
+  "boundaries": {
+    "intake_pressure_pa": 101325.0,
+    "intake_temperature_k": 300.0,
+    "exhaust_pressure_pa": 101325.0,
+    "exhaust_temperature_k": 700.0,
+    "crankcase_pressure_pa": 101325.0
+  },
+  "valves": {
+    "intake": {
+      "open_angle_deg": 348.0,
+      "close_angle_deg": 582.0,
+      "valve_diameter_m": 0.026,
+      "valve_count": 2,
+      "max_effective_area_m2": 0.00032,
+      "discharge_coefficient": 0.7
+    },
+    "exhaust": {
+      "open_angle_deg": 135.0,
+      "close_angle_deg": 370.0,
+      "valve_diameter_m": 0.022,
+      "valve_count": 2,
+      "max_effective_area_m2": 0.00023,
+      "discharge_coefficient": 0.7
+    }
+  },
+  "crank": {
+    "moment_of_inertia_kg_m2": 0.014,
+    "initial_speed_rpm": 3000.0,
+    "initial_crank_angle_deg": 0.0
+  },
+  "combustion": {
+    "enabled": true,
+    "lambda_target": 1.0,
+    "fuel_mass_per_cycle_kg": 0.000012,
+    "fuel_lower_heating_value_j_per_kg": 44000000.0,
+    "combustion_efficiency": 0.9,
+    "heat_loss_fraction": 0.2,
+    "spark_timing": {
+      "low_speed_rpm": 1700.0,
+      "low_speed_advance_deg_btdc": 10.0,
+      "high_speed_rpm": 3000.0,
+      "high_speed_advance_deg_btdc": 35.0
+    },
+    "ignition_delay_deg": 8.0,
+    "wiebe": {
+      "combustion_duration_rad": 0.6981317007977318,
+      "efficiency_coefficient": 5.0,
+      "shape_factor": 2.0
+    }
+  },
+  "simulation": {
+    "timestep_seconds": 0.00005
+  }
+}
