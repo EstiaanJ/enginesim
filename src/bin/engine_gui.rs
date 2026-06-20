@@ -1,6 +1,8 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Line, Plot, PlotPoints, Points};
 
@@ -11,7 +13,9 @@ use enginesim::engine_loader::{
     discover_engine_files, load_engine_and_handling,
 };
 use enginesim::profiles::SimulationProfile;
-use enginesim::single_cylinder::{SingleCylinderEngine, rad_per_s_to_rpm};
+use enginesim::single_cylinder::{
+    SingleCylinderEngine, SingleCylinderStepOutput, rad_per_s_to_rpm,
+};
 use enginesim::telemetry::{
     EngineControls, EngineFrameTelemetry, TelemetryAggregator, TelemetryAvailability,
     default_profile_for_gui,
@@ -23,6 +27,300 @@ const METRIC_CARD_HEIGHT: f32 = 36.0;
 const PLOT_ROW_SPACING: f32 = 12.0;
 const MIN_TWO_COLUMN_WIDTH: f32 = 900.0;
 const MIN_THREE_COLUMN_WIDTH: f32 = 1_550.0;
+const AUDIO_CAPTURE_WINDOW_SECONDS: f64 = 0.100;
+const AUDIO_PRESSURE_SCALE_PA: f64 = 20_000.0;
+
+struct RealtimeAudio {
+    shared: Arc<Mutex<AudioShared>>,
+    _stream: Option<cpal::Stream>,
+    enabled: bool,
+    exhaust_gain: f32,
+    intake_gain: f32,
+    status: String,
+}
+
+impl RealtimeAudio {
+    fn new() -> Self {
+        let host = cpal::default_host();
+        let device = host.default_output_device();
+        let Some(device) = device else {
+            return Self::disabled("audio: no default output device");
+        };
+        let config = match device.default_output_config() {
+            Ok(config) => config,
+            Err(err) => return Self::disabled(format!("audio: no default output config ({err})")),
+        };
+
+        let sample_rate_hz = config.sample_rate().0 as f64;
+        let channels = config.channels() as usize;
+        let shared = Arc::new(Mutex::new(AudioShared::new(sample_rate_hz)));
+        let err_fn = |err| eprintln!("engine_gui audio stream error: {err}");
+        let stream_config: cpal::StreamConfig = config.clone().into();
+        let stream = match config.sample_format() {
+            cpal::SampleFormat::F32 => build_output_stream::<f32>(
+                &device,
+                &stream_config,
+                channels,
+                shared.clone(),
+                err_fn,
+            ),
+            cpal::SampleFormat::I16 => build_output_stream::<i16>(
+                &device,
+                &stream_config,
+                channels,
+                shared.clone(),
+                err_fn,
+            ),
+            cpal::SampleFormat::U16 => build_output_stream::<u16>(
+                &device,
+                &stream_config,
+                channels,
+                shared.clone(),
+                err_fn,
+            ),
+            _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
+        };
+
+        let Ok(stream) = stream else {
+            return Self::disabled("audio: output stream unsupported");
+        };
+        if let Err(err) = stream.play() {
+            return Self::disabled(format!("audio: stream did not start ({err})"));
+        }
+
+        Self {
+            shared,
+            _stream: Some(stream),
+            enabled: false,
+            exhaust_gain: 0.4,
+            intake_gain: 0.2,
+            status: format!("audio: ready at {:.0} Hz", sample_rate_hz),
+        }
+    }
+
+    fn disabled(status: impl Into<String>) -> Self {
+        Self {
+            shared: Arc::new(Mutex::new(AudioShared::new(48_000.0))),
+            _stream: None,
+            enabled: false,
+            exhaust_gain: 0.0,
+            intake_gain: 0.0,
+            status: status.into(),
+        }
+    }
+
+    fn capture_step_output(
+        &mut self,
+        output: SingleCylinderStepOutput,
+        definition: &EngineDefinition,
+        real_time_mode: bool,
+    ) {
+        if !real_time_mode || !self.enabled {
+            return;
+        }
+
+        let exhaust_rel_pa =
+            output.exhaust_exit_pressure_pa - definition.boundaries.exhaust_pressure_pa;
+        let intake_rel_pa =
+            definition.boundaries.intake_pressure_pa - output.intake_plenum_pressure_pa;
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.capture(output.elapsed_time_seconds, exhaust_rel_pa, intake_rel_pa);
+        }
+    }
+
+    fn reset_capture(&mut self) {
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.reset_capture();
+        }
+    }
+
+    fn sync_controls(&mut self) {
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.enabled = self.enabled;
+            shared.exhaust_gain = self.exhaust_gain;
+            shared.intake_gain = self.intake_gain;
+        }
+    }
+
+    fn status(&self) -> &str {
+        &self.status
+    }
+}
+
+struct AudioShared {
+    sample_rate_hz: f64,
+    exhaust_buffer: Vec<f32>,
+    intake_buffer: Vec<f32>,
+    write_index: usize,
+    read_index: usize,
+    available_samples: usize,
+    last_time_seconds: Option<f64>,
+    next_sample_time_seconds: f64,
+    last_exhaust_sample: f32,
+    last_intake_sample: f32,
+    enabled: bool,
+    exhaust_gain: f32,
+    intake_gain: f32,
+}
+
+impl AudioShared {
+    fn new(sample_rate_hz: f64) -> Self {
+        let capacity = ((sample_rate_hz * AUDIO_CAPTURE_WINDOW_SECONDS).round() as usize).max(1);
+        Self {
+            sample_rate_hz,
+            exhaust_buffer: vec![0.0; capacity],
+            intake_buffer: vec![0.0; capacity],
+            write_index: 0,
+            read_index: 0,
+            available_samples: 0,
+            last_time_seconds: None,
+            next_sample_time_seconds: 0.0,
+            last_exhaust_sample: 0.0,
+            last_intake_sample: 0.0,
+            enabled: false,
+            exhaust_gain: 0.0,
+            intake_gain: 0.0,
+        }
+    }
+
+    fn reset_capture(&mut self) {
+        self.write_index = 0;
+        self.read_index = 0;
+        self.available_samples = 0;
+        self.last_time_seconds = None;
+        self.next_sample_time_seconds = 0.0;
+        self.last_exhaust_sample = 0.0;
+        self.last_intake_sample = 0.0;
+        self.exhaust_buffer.fill(0.0);
+        self.intake_buffer.fill(0.0);
+    }
+
+    fn capture(&mut self, time_seconds: f64, exhaust_rel_pa: f64, intake_rel_pa: f64) {
+        let exhaust_sample = pressure_sample(exhaust_rel_pa);
+        let intake_sample = pressure_sample(intake_rel_pa);
+        let Some(last_time_seconds) = self.last_time_seconds else {
+            self.last_time_seconds = Some(time_seconds);
+            self.next_sample_time_seconds = time_seconds;
+            self.last_exhaust_sample = exhaust_sample;
+            self.last_intake_sample = intake_sample;
+            return;
+        };
+
+        if time_seconds <= last_time_seconds {
+            self.last_time_seconds = Some(time_seconds);
+            self.next_sample_time_seconds = time_seconds;
+            self.last_exhaust_sample = exhaust_sample;
+            self.last_intake_sample = intake_sample;
+            return;
+        }
+
+        let sample_period_seconds = 1.0 / self.sample_rate_hz;
+        let mut emitted = 0usize;
+        let max_emitted = self.exhaust_buffer.len();
+        while self.next_sample_time_seconds <= time_seconds && emitted < max_emitted {
+            let fraction = ((self.next_sample_time_seconds - last_time_seconds)
+                / (time_seconds - last_time_seconds))
+                .clamp(0.0, 1.0) as f32;
+            let exhaust =
+                self.last_exhaust_sample + (exhaust_sample - self.last_exhaust_sample) * fraction;
+            let intake =
+                self.last_intake_sample + (intake_sample - self.last_intake_sample) * fraction;
+            self.push_sample(exhaust, intake);
+            self.next_sample_time_seconds += sample_period_seconds;
+            emitted += 1;
+        }
+
+        self.last_time_seconds = Some(time_seconds);
+        self.last_exhaust_sample = exhaust_sample;
+        self.last_intake_sample = intake_sample;
+    }
+
+    fn push_sample(&mut self, exhaust: f32, intake: f32) {
+        if self.available_samples == self.exhaust_buffer.len() {
+            self.read_index = (self.read_index + 1) % self.exhaust_buffer.len();
+            self.available_samples -= 1;
+        }
+        self.exhaust_buffer[self.write_index] = exhaust;
+        self.intake_buffer[self.write_index] = intake;
+        self.write_index = (self.write_index + 1) % self.exhaust_buffer.len();
+        self.available_samples += 1;
+    }
+
+    fn next_output_sample(&mut self) -> f32 {
+        if !self.enabled || self.available_samples == 0 {
+            return 0.0;
+        }
+        let sample = self.exhaust_buffer[self.read_index] * self.exhaust_gain
+            + self.intake_buffer[self.read_index] * self.intake_gain;
+        self.read_index = (self.read_index + 1) % self.exhaust_buffer.len();
+        self.available_samples -= 1;
+        sample.clamp(-1.0, 1.0)
+    }
+}
+
+fn pressure_sample(relative_pressure_pa: f64) -> f32 {
+    (relative_pressure_pa / AUDIO_PRESSURE_SCALE_PA).tanh() as f32
+}
+
+trait AudioSample: cpal::SizedSample {
+    fn from_unit_sample(value: f32) -> Self;
+}
+
+impl AudioSample for f32 {
+    fn from_unit_sample(value: f32) -> Self {
+        value
+    }
+}
+
+impl AudioSample for i16 {
+    fn from_unit_sample(value: f32) -> Self {
+        (value.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+    }
+}
+
+impl AudioSample for u16 {
+    fn from_unit_sample(value: f32) -> Self {
+        ((value.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16
+    }
+}
+
+fn build_output_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    shared: Arc<Mutex<AudioShared>>,
+    err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
+) -> Result<cpal::Stream, cpal::BuildStreamError>
+where
+    T: AudioSample,
+{
+    device.build_output_stream(
+        config,
+        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+            write_audio_data(data, channels, &shared);
+        },
+        err_fn,
+        None,
+    )
+}
+
+fn write_audio_data<T>(data: &mut [T], channels: usize, shared: &Arc<Mutex<AudioShared>>)
+where
+    T: AudioSample,
+{
+    if let Ok(mut shared) = shared.try_lock() {
+        for frame in data.chunks_mut(channels) {
+            let sample = T::from_unit_sample(shared.next_output_sample());
+            for output in frame {
+                *output = sample;
+            }
+        }
+    } else {
+        for output in data {
+            *output = T::from_unit_sample(0.0);
+        }
+    }
+}
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -43,6 +341,7 @@ struct EngineGuiApp {
     controls: EngineControls,
     telemetry: TelemetryAggregator,
     latest_frame: EngineFrameTelemetry,
+    audio: RealtimeAudio,
     running: bool,
     redline_cut_remaining_seconds: f64,
     last_wall_clock: Instant,
@@ -105,6 +404,7 @@ impl EngineGuiApp {
             SingleCylinderEngine::from_definition_with_profile(loaded.definition.clone(), profile);
         let telemetry = TelemetryAggregator::new(loaded.definition.clone(), controls);
         let latest_frame = telemetry.snapshot();
+        let audio = RealtimeAudio::new();
 
         Self {
             engine_path,
@@ -116,6 +416,7 @@ impl EngineGuiApp {
             controls,
             telemetry,
             latest_frame,
+            audio,
             running: true,
             redline_cut_remaining_seconds: 0.0,
             last_wall_clock: Instant::now(),
@@ -171,6 +472,7 @@ impl EngineGuiApp {
         );
         self.telemetry = TelemetryAggregator::new(self.definition.clone(), self.controls);
         self.latest_frame = self.telemetry.snapshot();
+        self.audio.reset_capture();
         self.redline_cut_remaining_seconds = 0.0;
         self.last_wall_clock = Instant::now();
     }
@@ -202,6 +504,11 @@ impl EngineGuiApp {
                     current_rpm,
                     redline_cut_active,
                 ));
+            self.audio.capture_step_output(
+                output,
+                &self.definition,
+                self.profile.kind == enginesim::profiles::SimulationProfileKind::RealTime,
+            );
             self.telemetry.ingest_step_output(output, timestep_seconds);
             self.redline_cut_remaining_seconds =
                 (self.redline_cut_remaining_seconds - timestep_seconds).max(0.0);
@@ -314,6 +621,16 @@ impl eframe::App for EngineGuiApp {
                         .text("Spark Cut")
                         .suffix(" rpm"),
                 );
+                ui.separator();
+                ui.checkbox(&mut self.audio.enabled, "Audio");
+                ui.add(
+                    egui::Slider::new(&mut self.audio.exhaust_gain, 0.0..=8.0).text("Exhaust Gain"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.audio.intake_gain, 0.0..=8.0).text("Intake Gain"),
+                );
+                self.audio.sync_controls();
+                ui.small(self.audio.status());
                 ui.separator();
                 ui.checkbox(&mut self.controls.dyno_mode_enabled, "Dyno Mode");
                 ui.add(
