@@ -173,6 +173,12 @@ pub struct EngineInstantSample {
     pub exhaust_effective_area_m2: f64,
     pub intake_mass_flow_kg_per_s: f64,
     pub exhaust_mass_flow_kg_per_s: f64,
+    /// Mean gas velocity through the intake valve (signed: positive into the
+    /// cylinder). Derived from mass flow, effective area and upstream density.
+    pub intake_valve_velocity_m_per_s: f64,
+    /// Mean gas velocity through the exhaust valve (signed: positive out of the
+    /// cylinder).
+    pub exhaust_valve_velocity_m_per_s: f64,
     pub torque_nm: f64,
     pub power_kw: f64,
     pub map_pa: f64,
@@ -222,6 +228,30 @@ impl EngineInstantSample {
         let (charge_air_kg, charge_fuel_kg) =
             chamber_species.charge_air_and_fuel_kg(stoichiometric_air_fuel_ratio);
 
+        let gas_constant = definition.gas.gas_constant_j_per_kg_k;
+        // Intake fills from the runner; exhaust blows down from the cylinder.
+        // Use the appropriate upstream density for the mean port-gas velocity.
+        let intake_density_kg_per_m3 = gas_density_kg_per_m3(
+            output.intake_runner_pressure_pa,
+            definition.boundaries.intake_temperature_k,
+            gas_constant,
+        );
+        let cylinder_density_kg_per_m3 = gas_density_kg_per_m3(
+            output.cylinder_pressure_pa,
+            output.cylinder_temperature_k,
+            gas_constant,
+        );
+        let intake_valve_velocity_m_per_s = valve_gas_velocity_m_per_s(
+            output.intake_mass_flow_kg_per_s,
+            output.intake_effective_area_m2,
+            intake_density_kg_per_m3,
+        );
+        let exhaust_valve_velocity_m_per_s = valve_gas_velocity_m_per_s(
+            output.exhaust_mass_flow_kg_per_s,
+            output.exhaust_effective_area_m2,
+            cylinder_density_kg_per_m3,
+        );
+
         Self {
             elapsed_time_seconds: output.elapsed_time_seconds,
             crank_angle_rad: output.crank_angle_rad,
@@ -233,6 +263,8 @@ impl EngineInstantSample {
             exhaust_effective_area_m2: output.exhaust_effective_area_m2,
             intake_mass_flow_kg_per_s: output.intake_mass_flow_kg_per_s,
             exhaust_mass_flow_kg_per_s: output.exhaust_mass_flow_kg_per_s,
+            intake_valve_velocity_m_per_s,
+            exhaust_valve_velocity_m_per_s,
             torque_nm: output.indicated_torque_nm,
             power_kw,
             map_pa: output.intake_plenum_pressure_pa,
@@ -282,6 +314,8 @@ pub struct AngleTraceSnapshot {
     pub exhaust_effective_area_m2: Vec<[f64; 2]>,
     pub chamber_air_mass_g: Vec<[f64; 2]>,
     pub chamber_fuel_scaled_g: Vec<[f64; 2]>,
+    pub intake_valve_velocity_m_per_s: Vec<[f64; 2]>,
+    pub exhaust_valve_velocity_m_per_s: Vec<[f64; 2]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -522,6 +556,8 @@ struct AngleTraceBuffers {
     exhaust_effective_area_m2: [f64; ANGLE_TRACE_BINS],
     chamber_air_mass_g: [f64; ANGLE_TRACE_BINS],
     chamber_fuel_scaled_g: [f64; ANGLE_TRACE_BINS],
+    intake_valve_velocity_m_per_s: [f64; ANGLE_TRACE_BINS],
+    exhaust_valve_velocity_m_per_s: [f64; ANGLE_TRACE_BINS],
     filled: [bool; ANGLE_TRACE_BINS],
 }
 
@@ -534,6 +570,8 @@ impl Default for AngleTraceBuffers {
             exhaust_effective_area_m2: [0.0; ANGLE_TRACE_BINS],
             chamber_air_mass_g: [0.0; ANGLE_TRACE_BINS],
             chamber_fuel_scaled_g: [0.0; ANGLE_TRACE_BINS],
+            intake_valve_velocity_m_per_s: [0.0; ANGLE_TRACE_BINS],
+            exhaust_valve_velocity_m_per_s: [0.0; ANGLE_TRACE_BINS],
             filled: [false; ANGLE_TRACE_BINS],
         }
     }
@@ -548,6 +586,8 @@ impl AngleTraceBuffers {
         self.exhaust_effective_area_m2[index] = sample.exhaust_effective_area_m2;
         self.chamber_air_mass_g[index] = sample.chamber_charge_air_mass_g;
         self.chamber_fuel_scaled_g[index] = sample.chamber_charge_fuel_scaled_g;
+        self.intake_valve_velocity_m_per_s[index] = sample.intake_valve_velocity_m_per_s;
+        self.exhaust_valve_velocity_m_per_s[index] = sample.exhaust_valve_velocity_m_per_s;
         self.filled[index] = true;
     }
 
@@ -565,6 +605,14 @@ impl AngleTraceBuffers {
             ),
             chamber_air_mass_g: points_from_trace(&self.chamber_air_mass_g, &self.filled),
             chamber_fuel_scaled_g: points_from_trace(&self.chamber_fuel_scaled_g, &self.filled),
+            intake_valve_velocity_m_per_s: points_from_trace(
+                &self.intake_valve_velocity_m_per_s,
+                &self.filled,
+            ),
+            exhaust_valve_velocity_m_per_s: points_from_trace(
+                &self.exhaust_valve_velocity_m_per_s,
+                &self.filled,
+            ),
         }
     }
 }
@@ -959,6 +1007,22 @@ fn engine_data_scalar_or_latest(
         .unwrap_or(fallback)
 }
 
+fn gas_density_kg_per_m3(pressure_pa: f64, temperature_k: f64, gas_constant_j_per_kg_k: f64) -> f64 {
+    if temperature_k <= 0.0 || gas_constant_j_per_kg_k <= 0.0 {
+        return 0.0;
+    }
+    (pressure_pa / (gas_constant_j_per_kg_k * temperature_k)).max(0.0)
+}
+
+/// Mean gas velocity through a valve from its mass flow, effective open area and
+/// the upstream density. Returns 0 when the valve is effectively shut.
+fn valve_gas_velocity_m_per_s(mass_flow_kg_per_s: f64, area_m2: f64, density_kg_per_m3: f64) -> f64 {
+    if area_m2 <= 1.0e-9 || density_kg_per_m3 <= 0.0 {
+        return 0.0;
+    }
+    mass_flow_kg_per_s / (density_kg_per_m3 * area_m2)
+}
+
 fn fuel_mass_for_lambda(definition: &EngineDefinition, lambda_target: f64) -> f64 {
     definition.combustion.fuel_mass_per_cycle_kg / lambda_target.clamp(0.1, 2.0)
 }
@@ -1060,6 +1124,8 @@ mod tests {
             exhaust_effective_area_m2: 0.0002,
             intake_mass_flow_kg_per_s: 0.01,
             exhaust_mass_flow_kg_per_s: 0.0,
+            intake_valve_velocity_m_per_s: 30.0,
+            exhaust_valve_velocity_m_per_s: 0.0,
             torque_nm,
             power_kw: 5.0,
             map_pa: 101_325.0,

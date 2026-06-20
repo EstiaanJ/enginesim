@@ -22,14 +22,19 @@ use enginesim::engine_config::{EngineDefinition, PipeDefinition, ValveDefinition
 use enginesim::engine_handling::{EngineHandlingDefinition, nearest_set_point_rpm};
 use enginesim::engine_loader::{LoadSource, load_engine_and_handling, save_engine_and_handling};
 use enginesim::profiles::SimulationProfile;
-use enginesim::single_cylinder::{SingleCylinderEngine, rad_per_s_to_rpm};
+use enginesim::single_cylinder::{
+    SingleCylinderEngine, rad_per_s_to_rpm, spark_angle_deg_for_rpm,
+};
 use enginesim::telemetry::{
     EngineControls, EngineFrameTelemetry, MAP_OVERRIDE_MAX_PA, TelemetryAggregator,
     TelemetryAvailability, TelemetryScalar, default_profile_for_gui,
 };
 use enginesim::tuning::{TuningSession, area_m2_from_diameter_mm, diameter_mm_from_area_m2};
 
-const ENGINE_JSON_PATH: &str = "data/engines/gn250.json";
+// Anchored to the crate directory at compile time so loading and saving work no
+// matter what working directory the binary is launched from (a bare relative
+// path only resolves when the cwd happens to be the repo root).
+const ENGINE_JSON_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/engines/gn250.json");
 const ENGINE_CYCLE_DEG: f64 = 720.0;
 
 fn main() -> eframe::Result<()> {
@@ -626,11 +631,12 @@ impl TuningGuiApp {
     }
 
     fn angle_plots(&self, ui: &mut egui::Ui) {
-        let telemetry = &self.latest_frame;
         egui::ScrollArea::vertical()
             .id_salt("angle_plots_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                self.draw_cycle_diagram(ui);
+                let telemetry = &self.latest_frame;
                 angle_plot(
                     ui,
                     "Cylinder Pressure",
@@ -656,6 +662,23 @@ impl TuningGuiApp {
                 );
                 angle_plot(
                     ui,
+                    "Valve Gas Velocity",
+                    "Velocity (m/s)",
+                    &[
+                        (
+                            "Intake",
+                            &telemetry.angle_trace.intake_valve_velocity_m_per_s,
+                            Color32::from_rgb(120, 220, 120),
+                        ),
+                        (
+                            "Exhaust",
+                            &telemetry.angle_trace.exhaust_valve_velocity_m_per_s,
+                            Color32::from_rgb(230, 150, 110),
+                        ),
+                    ],
+                );
+                angle_plot(
+                    ui,
                     "Charge Air vs Fuel x AFR",
                     "Mass (g)",
                     &[
@@ -672,6 +695,142 @@ impl TuningGuiApp {
                     ],
                 );
             });
+    }
+
+    /// One figure tying together piston position, the four strokes, valve open
+    /// windows and spark timing across the 720-degree cycle, with a live marker
+    /// at the current crank angle. Drawn from the committed config.
+    fn draw_cycle_diagram(&self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Cycle Diagram — piston · strokes · valves · spark").strong());
+        let (response, painter) =
+            ui.allocate_painter(egui::vec2(ui.available_width(), 230.0), egui::Sense::hover());
+        let rect = response.rect;
+
+        let definition = self.session.committed_engine();
+        let stroke_m = definition.geometry.stroke_m;
+        let rod_m = definition.geometry.connecting_rod_length_m;
+        let rpm = rad_per_s_to_rpm(self.engine.crank_speed_rad_per_s());
+        let spark_deg = spark_angle_deg_for_rpm(definition.combustion.spark_timing, rpm);
+        let current_deg = self
+            .engine
+            .crank_angle_rad()
+            .to_degrees()
+            .rem_euclid(ENGINE_CYCLE_DEG);
+
+        let left = rect.left() + 6.0;
+        let right = rect.right() - 6.0;
+        let width = (right - left).max(1.0);
+        let x_of = |angle_deg: f64| left + (angle_deg / ENGINE_CYCLE_DEG) as f32 * width;
+
+        let intake_y = rect.top() + 6.0;
+        let bar_h = 12.0;
+        let exhaust_y = intake_y + bar_h + 4.0;
+        let piston_top = exhaust_y + bar_h + 10.0;
+        let piston_bottom = rect.bottom() - 18.0;
+        let piston_h = (piston_bottom - piston_top).max(1.0);
+
+        painter.rect_filled(rect, egui::CornerRadius::ZERO, Color32::from_gray(18));
+
+        // Stroke bands + labels (model convention: 0=TDC firing).
+        let strokes = [
+            (0.0, 180.0, "Power"),
+            (180.0, 360.0, "Exhaust"),
+            (360.0, 540.0, "Intake"),
+            (540.0, 720.0, "Compression"),
+        ];
+        for (index, (a0, a1, name)) in strokes.iter().enumerate() {
+            let band = egui::Rect::from_min_max(
+                egui::pos2(x_of(*a0), piston_top),
+                egui::pos2(x_of(*a1), piston_bottom),
+            );
+            let shade = if index % 2 == 0 {
+                Color32::from_gray(30)
+            } else {
+                Color32::from_gray(40)
+            };
+            painter.rect_filled(band, egui::CornerRadius::ZERO, shade);
+            painter.text(
+                egui::pos2((x_of(*a0) + x_of(*a1)) / 2.0, piston_bottom - 4.0),
+                egui::Align2::CENTER_BOTTOM,
+                *name,
+                egui::FontId::proportional(12.0),
+                Color32::from_gray(150),
+            );
+        }
+
+        // Piston position curve (TDC at the top of the band).
+        let mut points = Vec::new();
+        let mut angle = 0.0;
+        while angle <= ENGINE_CYCLE_DEG {
+            let fraction = piston_fraction(angle, stroke_m, rod_m);
+            points.push(egui::pos2(x_of(angle), piston_top + fraction as f32 * piston_h));
+            angle += 3.0;
+        }
+        painter.add(egui::Shape::line(
+            points,
+            egui::Stroke::new(2.0, Color32::LIGHT_BLUE),
+        ));
+
+        // Valve open windows (wrap-aware).
+        draw_valve_band(
+            &painter,
+            intake_y,
+            bar_h,
+            definition.valves.intake.open_angle_deg,
+            definition.valves.intake.close_angle_deg,
+            &x_of,
+            Color32::from_rgb(80, 180, 80),
+        );
+        draw_valve_band(
+            &painter,
+            exhaust_y,
+            bar_h,
+            definition.valves.exhaust.open_angle_deg,
+            definition.valves.exhaust.close_angle_deg,
+            &x_of,
+            Color32::from_rgb(200, 120, 80),
+        );
+        painter.text(
+            egui::pos2(left + 2.0, intake_y),
+            egui::Align2::LEFT_TOP,
+            "IN",
+            egui::FontId::proportional(11.0),
+            Color32::WHITE,
+        );
+        painter.text(
+            egui::pos2(left + 2.0, exhaust_y),
+            egui::Align2::LEFT_TOP,
+            "EX",
+            egui::FontId::proportional(11.0),
+            Color32::WHITE,
+        );
+
+        // Spark line.
+        let spark_x = x_of(spark_deg);
+        painter.line_segment(
+            [
+                egui::pos2(spark_x, piston_top),
+                egui::pos2(spark_x, piston_bottom),
+            ],
+            egui::Stroke::new(1.5, Color32::YELLOW),
+        );
+        painter.text(
+            egui::pos2(spark_x, piston_top),
+            egui::Align2::CENTER_BOTTOM,
+            "spark",
+            egui::FontId::proportional(11.0),
+            Color32::YELLOW,
+        );
+
+        // Live crank-angle marker.
+        let current_x = x_of(current_deg);
+        painter.line_segment(
+            [
+                egui::pos2(current_x, rect.top()),
+                egui::pos2(current_x, piston_bottom),
+            ],
+            egui::Stroke::new(1.5, Color32::WHITE),
+        );
     }
 }
 
@@ -740,6 +899,41 @@ impl eframe::App for TuningGuiApp {
 // ---------------------------------------------------------------------------
 // Tuning input widgets
 // ---------------------------------------------------------------------------
+
+/// Normalised piston position from slider-crank geometry: 0 at TDC, 1 at BDC.
+fn piston_fraction(angle_deg: f64, stroke_m: f64, rod_m: f64) -> f64 {
+    if stroke_m <= 0.0 || rod_m <= 0.0 {
+        return 0.0;
+    }
+    let crank_radius_m = stroke_m / 2.0;
+    let theta = angle_deg.to_radians();
+    let distance_from_tdc_m = (crank_radius_m + rod_m)
+        - (crank_radius_m * theta.cos()
+            + (rod_m * rod_m - (crank_radius_m * theta.sin()).powi(2)).sqrt());
+    (distance_from_tdc_m / stroke_m).clamp(0.0, 1.0)
+}
+
+/// Fill a valve's open window on the diagram, splitting across the 720-degree
+/// wrap when the close angle precedes the open angle.
+fn draw_valve_band<F: Fn(f64) -> f32>(
+    painter: &egui::Painter,
+    y: f32,
+    height: f32,
+    open_deg: f64,
+    close_deg: f64,
+    x_of: &F,
+    color: Color32,
+) {
+    let segments: Vec<(f64, f64)> = if close_deg >= open_deg {
+        vec![(open_deg, close_deg)]
+    } else {
+        vec![(open_deg, ENGINE_CYCLE_DEG), (0.0, close_deg)]
+    };
+    for (a0, a1) in segments {
+        let band = egui::Rect::from_min_max(egui::pos2(x_of(a0), y), egui::pos2(x_of(a1), y + height));
+        painter.rect_filled(band, egui::CornerRadius::ZERO, color);
+    }
+}
 
 fn runner_controls(ui: &mut egui::Ui, label: &str, runner: &mut PipeDefinition) {
     ui.label(RichText::new(label).strong());
@@ -817,6 +1011,40 @@ fn valve_controls(ui: &mut egui::Ui, label: &str, valve: &mut ValveDefinition) {
             valve.close_angle_deg = (valve.open_angle_deg + duration).rem_euclid(ENGINE_CYCLE_DEG);
         }
     });
+
+    let mut diameter_mm = valve.valve_diameter_m * 1000.0;
+    if labelled_drag(ui, "Valve diameter", &mut diameter_mm, 0.1, 1.0..=80.0, " mm") {
+        valve.valve_diameter_m = diameter_mm / 1000.0;
+    }
+    ui.horizontal(|ui| {
+        ui.label("Valve count");
+        let mut count = valve.valve_count as f64;
+        if ui
+            .add(DragValue::new(&mut count).speed(1.0).range(1.0..=8.0))
+            .changed()
+        {
+            valve.valve_count = count.round().max(1.0) as u32;
+        }
+    });
+    labelled_drag(
+        ui,
+        "Discharge coef",
+        &mut valve.discharge_coefficient,
+        0.005,
+        0.0..=1.0,
+        "",
+    );
+    let mut max_area_mm2 = valve.max_effective_area_m2 * 1.0e6;
+    if labelled_drag(
+        ui,
+        "Max eff. area",
+        &mut max_area_mm2,
+        1.0,
+        1.0..=2000.0,
+        " mm^2",
+    ) {
+        valve.max_effective_area_m2 = max_area_mm2 / 1.0e6;
+    }
 }
 
 /// Edit a spark advance, honouring the absolute/BTDC angle-entry toggle. The

@@ -1604,8 +1604,8 @@ mod tests {
         let timing = definition().combustion.spark_timing;
 
         assert_approx_eq(spark_angle_deg_for_rpm(timing, 1600.0), 710.0, EPSILON);
-        assert_approx_eq(spark_angle_deg_for_rpm(timing, 3000.0), 685.0, EPSILON);
-        assert_approx_eq(spark_angle_deg_for_rpm(timing, 2350.0), 697.5, EPSILON);
+        assert_approx_eq(spark_angle_deg_for_rpm(timing, 3000.0), 690.0, EPSILON);
+        assert_approx_eq(spark_angle_deg_for_rpm(timing, 2350.0), 700.0, EPSILON);
     }
 
     #[test]
@@ -1926,7 +1926,9 @@ mod tests {
     #[test]
     fn valve_overlap_allows_intake_flow_reversal() {
         let mut definition = definition();
-        definition.crank.initial_crank_angle_deg = 390.0;
+        // The current GN250 fixture opens the intake at 405 deg, so sit a little
+        // way into the intake-open window where the valve has lift.
+        definition.crank.initial_crank_angle_deg = 447.0;
         let mut engine = SingleCylinderEngine::from_definition(definition.clone());
         let volume_m3 = cylinder_volume_m3(&definition, engine.crank_angle_rad());
         engine.chamber_state = chamber_state_at_pressure(

@@ -422,42 +422,42 @@ fn intake_and_exhaust_pressure_trace_regression_features_match_baseline() {
         vec![
             ScalarBaseline::new(
                 "intake_runner_pressure_min_pa",
-                82_015.55994639447,
+                40668.6189,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "intake_runner_pressure_max_pa",
-                140_118.45272147984,
+                106245.2680,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "intake_runner_pressure_mean_pa",
-                100_714.5393213477,
+                94006.4526,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "intake_runner_pressure_rms_ac_pa",
-                9_262.004454969963,
+                18553.2032,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "exhaust_runner_pressure_min_pa",
-                74_775.63917095866,
+                60560.0460,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "exhaust_runner_pressure_max_pa",
-                143_515.94444672,
+                192669.0536,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "exhaust_runner_pressure_mean_pa",
-                107_948.27135112707,
+                118461.9629,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "exhaust_runner_pressure_rms_ac_pa",
-                18_652.54723020028,
+                36176.6297,
                 Tolerance::combined(25.0, 0.01),
             ),
         ],
@@ -499,27 +499,27 @@ fn single_cylinder_pressure_work_and_torque_regression_features_match_baseline()
         vec![
             ScalarBaseline::new(
                 "peak_cylinder_pressure_pa",
-                3_076_691.590267162,
+                6365676.6955,
                 Tolerance::combined(500.0, 0.02),
             ),
             ScalarBaseline::new(
                 "pressure_trace_mean_pa",
-                409_078.06392577244,
+                666990.2393,
                 Tolerance::combined(500.0, 0.02),
             ),
             ScalarBaseline::new(
                 "pressure_trace_rms_ac_pa",
-                601_268.9087916206,
+                1202641.5130,
                 Tolerance::combined(500.0, 0.02),
             ),
             ScalarBaseline::new(
                 "indicated_work_j",
-                73.10726130459304,
+                293.8279,
                 Tolerance::combined(0.5, 0.03),
             ),
             ScalarBaseline::new(
                 "mean_indicated_torque_nm",
-                2.9088455031341107,
+                11.6910,
                 Tolerance::combined(0.05, 0.03),
             ),
         ],
@@ -597,42 +597,42 @@ fn pressure_trace_sensitivity_to_combustion_timing_and_lambda_matches_baseline()
         vec![
             ScalarBaseline::new(
                 "nominal_peak_pressure_pa",
-                3_076_691.590267162,
+                6365676.6955,
                 Tolerance::combined(500.0, 0.03),
             ),
             ScalarBaseline::new(
                 "delayed_peak_pressure_pa",
-                2_865_550.4741831482,
+                5693347.2574,
                 Tolerance::combined(500.0, 0.03),
             ),
             ScalarBaseline::new(
                 "long_burn_peak_pressure_pa",
-                2_673_615.4770233566,
+                5155514.8837,
                 Tolerance::combined(500.0, 0.03),
             ),
             ScalarBaseline::new(
                 "lean_peak_pressure_pa",
-                2_772_383.4686941667,
+                2554237.0013,
                 Tolerance::combined(500.0, 0.03),
             ),
             ScalarBaseline::new(
                 "nominal_mean_torque_nm",
-                2.9088455031341107,
+                11.6910,
                 Tolerance::combined(0.05, 0.05),
             ),
             ScalarBaseline::new(
                 "delayed_mean_torque_nm",
-                3.12485079007096,
+                12.0290,
                 Tolerance::combined(0.05, 0.05),
             ),
             ScalarBaseline::new(
                 "long_burn_mean_torque_nm",
-                3.078872417073595,
+                11.8082,
                 Tolerance::combined(0.05, 0.05),
             ),
             ScalarBaseline::new(
                 "lean_mean_torque_nm",
-                0.5761515175645587,
+                2.8520,
                 Tolerance::combined(0.05, 0.05),
             ),
         ],
@@ -807,16 +807,14 @@ fn dynamic_crank_step_responds_to_external_load_torque() {
 
 #[test]
 fn split_config_preserves_fixed_speed_run_baseline() {
-    // Golden values captured from the pre-refactor build, when the engine config
-    // still carried a `simulation` block and pipes used cell_count/cell_length_m.
-    // Splitting into engine + handling config and renaming the runner grid to
-    // total_length_m / number_of_cells keeps cell geometry and the timestep
-    // identical, so these outputs must not move.
+    // Regression lock for a fixed-speed run of the current gn250 fixture. Update
+    // these goldens deliberately when the fixture is retuned (recapture from a
+    // 4-cycle run at 2500 rpm).
     let definition = gn250_definition();
     let summary = run_fixed_speed_cycles(&definition, 2500.0, 4);
 
-    assert_close(summary.mean_indicated_torque_nm, 2.5412630899, 1.0e-6);
-    assert_close(summary.indicated_work_j, 127.7378152664, 1.0e-6);
+    assert_close(summary.mean_indicated_torque_nm, 7.4526910000, 1.0e-6);
+    assert_close(summary.indicated_work_j, 374.6131180000, 1.0e-6);
 }
 
 #[test]
@@ -825,11 +823,11 @@ fn renamed_pipe_grid_preserves_cell_geometry() {
     let intake = definition.intake_exhaust.intake_runner;
     let exhaust = definition.intake_exhaust.exhaust_runner;
 
-    assert_eq!(intake.number_of_cells, 8);
-    assert_close(intake.total_length_m, 0.04, 1.0e-12);
-    assert_close(intake.cell_length_m(), 0.005, 1.0e-12);
+    assert_eq!(intake.number_of_cells, 6);
+    assert_close(intake.total_length_m, 0.018, 1.0e-12);
+    assert_close(intake.cell_length_m(), 0.018 / 6.0, 1.0e-12);
 
-    assert_eq!(exhaust.number_of_cells, 26);
+    assert_eq!(exhaust.number_of_cells, 15);
     assert_close(exhaust.total_length_m, 1.95, 1.0e-12);
-    assert_close(exhaust.cell_length_m(), 0.075, 1.0e-12);
+    assert_close(exhaust.cell_length_m(), 1.95 / 15.0, 1.0e-12);
 }

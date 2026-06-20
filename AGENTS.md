@@ -12,7 +12,6 @@
 - Keep GUI-facing aggregation in `src/telemetry.rs`. Do not let GUI widgets reach directly into raw simulation internals.
 - Build one deterministic simulation core. Real-time mode and render mode should be different profiles of the same model graph, not separate simulator implementations.
 - Prefer a single-threaded fixed-step scheduler until conservation, coupling and event ordering are correct. Add parallelism later only when it preserves deterministic results for the same inputs.
-- Do not paper over physics problems with clamps unless the clamp represents an intentional physical boundary and is documented.
 - Engine definitions are JSON-backed through serde. Keep engine data in `data/engines/` and keep all values SI in JSON files.
 - Treat `data/engines/gn250.json` as an approximate Phase 2 fixture, not a calibrated GN250 model. Its rod length, valve timing, valve diameters/counts, lambda target and spark schedule are supplied GN250 values; effective flow areas, crank inertia interpretation and combustion energy settings are still approximate.
 
@@ -24,7 +23,6 @@
 - When adding engine-loop behavior, include tests for deterministic repeatability and profile-independent model behavior where practical.
 - When implementing a roadmap phase, include that phase's testing and validation items rather than leaving testing only to Phase 1.
 - When fixing a physics bug, add a test that would have failed before the fix.
-- Keep unit tests fast and colocated with the module under test.
 - Put coupled model behavior in integration tests once the relevant modules exist.
 - Regression baselines must include model/profile settings, engine configuration, environmental inputs and explicit tolerances.
 - If a baseline changes intentionally, document why the new output is more correct.

@@ -157,30 +157,33 @@ mod tests {
         let json = include_str!("../data/engines/gn250.json");
         let definition = EngineDefinition::from_json_str(json).expect("GN250 JSON should parse");
 
+        // Pin only the stable engine identity. Valve timing/diameters, runner
+        // cell counts, lambda etc. are tunable (and saved back to this file from
+        // the tuning GUI), so this parse test asserts invariants/ranges for them
+        // rather than exact values that legitimately change when the engine is
+        // retuned. Exact serialization fidelity is covered by the round-trip test.
         assert_eq!(definition.metadata.name, "Suzuki GN250 approximation");
         assert_eq!(definition.geometry.bore_m, 0.072);
         assert_eq!(definition.geometry.stroke_m, 0.0612);
         assert_eq!(definition.geometry.connecting_rod_length_m, 0.115);
-        assert_eq!(definition.valves.intake.open_angle_deg, 348.0);
-        assert_eq!(definition.valves.intake.close_angle_deg, 582.0);
-        assert_eq!(definition.valves.intake.valve_diameter_m, 0.026);
-        assert_eq!(definition.valves.intake.valve_count, 2);
-        assert_eq!(definition.valves.exhaust.open_angle_deg, 135.0);
-        assert_eq!(definition.valves.exhaust.close_angle_deg, 370.0);
-        assert_eq!(definition.valves.exhaust.valve_diameter_m, 0.022);
-        assert_eq!(definition.valves.exhaust.valve_count, 2);
-        assert_eq!(definition.intake_exhaust.intake_runner.number_of_cells, 8);
-        assert_eq!(definition.intake_exhaust.intake_runner.total_length_m, 0.04);
+
+        for valve in [&definition.valves.intake, &definition.valves.exhaust] {
+            assert!((0.0..=720.0).contains(&valve.open_angle_deg));
+            assert!((0.0..=720.0).contains(&valve.close_angle_deg));
+            assert!(valve.valve_diameter_m > 0.0);
+            assert!(valve.valve_count >= 1);
+            assert!((0.0..=1.0).contains(&valve.discharge_coefficient));
+        }
+
+        let intake_runner = &definition.intake_exhaust.intake_runner;
+        assert!(intake_runner.number_of_cells >= 1);
+        assert!(intake_runner.total_length_m > 0.0);
         assert_eq!(
-            definition.intake_exhaust.intake_runner.cell_length_m(),
-            0.005
+            intake_runner.cell_length_m(),
+            intake_runner.total_length_m / intake_runner.number_of_cells as f64
         );
-        assert_eq!(definition.intake_exhaust.intake_plenum_volume_m3, 0.0010);
-        assert_eq!(
-            definition.intake_exhaust.idle_throttle_maximum_area_m2,
-            Some(0.00003)
-        );
-        assert_eq!(definition.combustion.lambda_target, 1.0);
+        assert!(definition.intake_exhaust.intake_plenum_volume_m3 > 0.0);
+        assert!(definition.combustion.lambda_target > 0.0);
         assert_eq!(
             definition.combustion.mixture_limits,
             default_mixture_limits()

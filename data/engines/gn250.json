@@ -24,36 +24,36 @@
     "crankcase_pressure_pa": 101325.0
   },
   "intake_exhaust": {
-    "intake_plenum_volume_m3": 0.0010,
-    "throttle_maximum_area_m2": 0.0005,
+    "intake_plenum_volume_m3": 0.0002,
+    "throttle_maximum_area_m2": 0.001963495408493621,
     "idle_throttle_maximum_area_m2": 0.00003,
     "intake_runner": {
-      "number_of_cells": 8,
-      "total_length_m": 0.04,
-      "area_m2": 0.0018
+      "number_of_cells": 6,
+      "total_length_m": 0.018,
+      "area_m2": 0.0012566
     },
     "exhaust_runner": {
-      "number_of_cells": 26,
+      "number_of_cells": 15,
       "total_length_m": 1.95,
-      "area_m2": 0.000745
+      "area_m2": 0.0007069
     }
   },
   "valves": {
     "intake": {
-      "open_angle_deg": 348.0,
-      "close_angle_deg": 582.0,
-      "valve_diameter_m": 0.026,
+      "open_angle_deg": 390.0,
+      "close_angle_deg": 650.0,
+      "valve_diameter_m": 0.03,
       "valve_count": 2,
       "max_effective_area_m2": 0.00032,
-      "discharge_coefficient": 0.7
+      "discharge_coefficient": 0.9
     },
     "exhaust": {
-      "open_angle_deg": 135.0,
-      "close_angle_deg": 370.0,
+      "open_angle_deg": 148.0,
+      "close_angle_deg": 398.0,
       "valve_diameter_m": 0.022,
       "valve_count": 2,
       "max_effective_area_m2": 0.00023,
-      "discharge_coefficient": 0.7
+      "discharge_coefficient": 0.8
     }
   },
   "crank": {
@@ -68,11 +68,18 @@
     "fuel_lower_heating_value_j_per_kg": 44000000.0,
     "combustion_efficiency": 0.9,
     "heat_loss_fraction": 0.2,
+    "mixture_limits": {
+      "stoichiometric_air_fuel_ratio": 14.7,
+      "minimum_combustible_air_fuel_ratio": 7.5,
+      "maximum_combustible_air_fuel_ratio": 26.1101243339254,
+      "peak_rich_equivalence_ratio": 1.1,
+      "peak_lean_equivalence_ratio": 0.95
+    },
     "spark_timing": {
       "low_speed_rpm": 1700.0,
       "low_speed_advance_deg_btdc": 10.0,
       "high_speed_rpm": 3000.0,
-      "high_speed_advance_deg_btdc": 35.0
+      "high_speed_advance_deg_btdc": 30.0
     },
     "ignition_delay_deg": 4.0,
     "wiebe": {

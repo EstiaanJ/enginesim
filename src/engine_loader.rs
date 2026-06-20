@@ -85,6 +85,9 @@ pub fn save_engine_and_handling(
     definition: &EngineDefinition,
     handling: &EngineHandlingDefinition,
 ) -> Result<(), String> {
+    if let Some(parent) = engine_path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|err| format!("{parent:?}: {err}"))?;
+    }
     let engine_json = definition
         .to_json_string_pretty()
         .map_err(|err| format!("serialize engine: {err}"))?;
