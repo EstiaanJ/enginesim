@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 
-use crate::physics::chamber::ChamberSpeciesMasses;
 use crate::engine_config::EngineDefinition;
 use crate::engine_handling::EngineHandlingDefinition;
+use crate::physics::chamber::ChamberSpeciesMasses;
 use crate::profiles::SimulationProfile;
 use crate::single_cylinder::{
     SingleCylinderStepInputs, SingleCylinderStepOutput, rpm_to_rad_per_s,
@@ -178,6 +178,7 @@ pub struct EngineInstantSample {
     pub torque_nm: f64,
     pub power_kw: f64,
     pub map_pa: f64,
+    pub exhaust_exit_pressure_pa: f64,
     pub fuel_flow_mg_per_s: f64,
     pub air_flow_g_per_s: f64,
     pub bmep_kpa: f64,
@@ -264,6 +265,7 @@ impl EngineInstantSample {
             torque_nm: output.indicated_torque_nm,
             power_kw,
             map_pa: output.intake_plenum_pressure_pa,
+            exhaust_exit_pressure_pa: output.exhaust_exit_pressure_pa,
             fuel_flow_mg_per_s,
             air_flow_g_per_s: output.intake_mass_flow_kg_per_s * 1000.0,
             bmep_kpa,
@@ -308,6 +310,7 @@ pub struct AngleTraceSnapshot {
     pub temperature_k: Vec<[f64; 2]>,
     pub intake_effective_area_m2: Vec<[f64; 2]>,
     pub exhaust_effective_area_m2: Vec<[f64; 2]>,
+    pub exhaust_exit_pressure_pa: Vec<[f64; 2]>,
     pub chamber_air_mass_g: Vec<[f64; 2]>,
     pub chamber_fuel_scaled_g: Vec<[f64; 2]>,
     pub intake_valve_velocity_m_per_s: Vec<[f64; 2]>,
@@ -319,6 +322,7 @@ pub struct TimePlotPoint {
     pub time_seconds: f64,
     pub rpm: f64,
     pub map_pa: f64,
+    pub exhaust_exit_pressure_pa: f64,
     pub torque_nm: f64,
 }
 
@@ -383,6 +387,7 @@ struct EngineDataFrame {
     bmep_kpa: f64,
     volumetric_efficiency_percent: f64,
     map_pa: f64,
+    exhaust_exit_pressure_pa: f64,
     chamber_lambda: TelemetryScalar,
     exhaust_lambda: TelemetryScalar,
 }
@@ -398,6 +403,7 @@ struct PendingFrameAccumulator {
     bmep_weighted_sum: f64,
     volumetric_efficiency_weighted_sum: f64,
     map_weighted_sum: f64,
+    exhaust_exit_pressure_weighted_sum: f64,
     chamber_lambda: ScalarFrameAccumulator,
     exhaust_lambda: ScalarFrameAccumulator,
 }
@@ -414,6 +420,8 @@ impl PendingFrameAccumulator {
         self.volumetric_efficiency_weighted_sum +=
             sample.volumetric_efficiency_percent * sample_duration_seconds;
         self.map_weighted_sum += sample.map_pa * sample_duration_seconds;
+        self.exhaust_exit_pressure_weighted_sum +=
+            sample.exhaust_exit_pressure_pa * sample_duration_seconds;
         self.chamber_lambda
             .push(sample.chamber_lambda, sample_duration_seconds);
         self.exhaust_lambda
@@ -435,6 +443,8 @@ impl PendingFrameAccumulator {
             volumetric_efficiency_percent: self.volumetric_efficiency_weighted_sum
                 / self.duration_seconds,
             map_pa: self.map_weighted_sum / self.duration_seconds,
+            exhaust_exit_pressure_pa: self.exhaust_exit_pressure_weighted_sum
+                / self.duration_seconds,
             chamber_lambda: self.chamber_lambda.finalize(),
             exhaust_lambda: self.exhaust_lambda.finalize(),
         })
@@ -550,6 +560,7 @@ struct AngleTraceBuffers {
     temperature_k: [f64; ANGLE_TRACE_BINS],
     intake_effective_area_m2: [f64; ANGLE_TRACE_BINS],
     exhaust_effective_area_m2: [f64; ANGLE_TRACE_BINS],
+    exhaust_exit_pressure_pa: [f64; ANGLE_TRACE_BINS],
     chamber_air_mass_g: [f64; ANGLE_TRACE_BINS],
     chamber_fuel_scaled_g: [f64; ANGLE_TRACE_BINS],
     intake_valve_velocity_m_per_s: [f64; ANGLE_TRACE_BINS],
@@ -564,6 +575,7 @@ impl Default for AngleTraceBuffers {
             temperature_k: [0.0; ANGLE_TRACE_BINS],
             intake_effective_area_m2: [0.0; ANGLE_TRACE_BINS],
             exhaust_effective_area_m2: [0.0; ANGLE_TRACE_BINS],
+            exhaust_exit_pressure_pa: [0.0; ANGLE_TRACE_BINS],
             chamber_air_mass_g: [0.0; ANGLE_TRACE_BINS],
             chamber_fuel_scaled_g: [0.0; ANGLE_TRACE_BINS],
             intake_valve_velocity_m_per_s: [0.0; ANGLE_TRACE_BINS],
@@ -580,6 +592,7 @@ impl AngleTraceBuffers {
         self.temperature_k[index] = sample.temperature_k;
         self.intake_effective_area_m2[index] = sample.intake_effective_area_m2;
         self.exhaust_effective_area_m2[index] = sample.exhaust_effective_area_m2;
+        self.exhaust_exit_pressure_pa[index] = sample.exhaust_exit_pressure_pa;
         self.chamber_air_mass_g[index] = sample.chamber_charge_air_mass_g;
         self.chamber_fuel_scaled_g[index] = sample.chamber_charge_fuel_scaled_g;
         self.intake_valve_velocity_m_per_s[index] = sample.intake_valve_velocity_m_per_s;
@@ -597,6 +610,10 @@ impl AngleTraceBuffers {
             ),
             exhaust_effective_area_m2: points_from_trace(
                 &self.exhaust_effective_area_m2,
+                &self.filled,
+            ),
+            exhaust_exit_pressure_pa: points_from_trace(
+                &self.exhaust_exit_pressure_pa,
                 &self.filled,
             ),
             chamber_air_mass_g: points_from_trace(&self.chamber_air_mass_g, &self.filled),
@@ -842,6 +859,7 @@ impl TelemetryAggregator {
                     time_seconds: latest_sample.elapsed_time_seconds,
                     rpm: frame.rpm,
                     map_pa: frame.map_pa,
+                    exhaust_exit_pressure_pa: frame.exhaust_exit_pressure_pa,
                     torque_nm: frame.torque_nm,
                 });
             }
@@ -902,6 +920,7 @@ fn average_engine_data_frames(frames: &RollingWindow<EngineDataFrame>) -> Engine
             bmep_kpa: 0.0,
             volumetric_efficiency_percent: 0.0,
             map_pa: 0.0,
+            exhaust_exit_pressure_pa: 0.0,
             chamber_lambda: TelemetryScalar::unavailable(),
             exhaust_lambda: TelemetryScalar::unavailable(),
         };
@@ -929,6 +948,11 @@ fn average_engine_data_frames(frames: &RollingWindow<EngineDataFrame>) -> Engine
             .sum::<f64>()
             / count,
         map_pa: frames.iter().map(|frame| frame.map_pa).sum::<f64>() / count,
+        exhaust_exit_pressure_pa: frames
+            .iter()
+            .map(|frame| frame.exhaust_exit_pressure_pa)
+            .sum::<f64>()
+            / count,
         chamber_lambda: average_scalars(frames.iter().map(|frame| frame.chamber_lambda)),
         exhaust_lambda: average_scalars(frames.iter().map(|frame| frame.exhaust_lambda)),
     }
@@ -955,7 +979,11 @@ fn engine_data_scalar_or_latest(
         .unwrap_or(fallback)
 }
 
-fn gas_density_kg_per_m3(pressure_pa: f64, temperature_k: f64, gas_constant_j_per_kg_k: f64) -> f64 {
+fn gas_density_kg_per_m3(
+    pressure_pa: f64,
+    temperature_k: f64,
+    gas_constant_j_per_kg_k: f64,
+) -> f64 {
     if temperature_k <= 0.0 || gas_constant_j_per_kg_k <= 0.0 {
         return 0.0;
     }
@@ -964,7 +992,11 @@ fn gas_density_kg_per_m3(pressure_pa: f64, temperature_k: f64, gas_constant_j_pe
 
 /// Mean gas velocity through a valve from its mass flow, effective open area and
 /// the upstream density. Returns 0 when the valve is effectively shut.
-fn valve_gas_velocity_m_per_s(mass_flow_kg_per_s: f64, area_m2: f64, density_kg_per_m3: f64) -> f64 {
+fn valve_gas_velocity_m_per_s(
+    mass_flow_kg_per_s: f64,
+    area_m2: f64,
+    density_kg_per_m3: f64,
+) -> f64 {
     if area_m2 <= 1.0e-9 || density_kg_per_m3 <= 0.0 {
         return 0.0;
     }
@@ -1036,8 +1068,8 @@ fn points_from_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::physics::chamber::ChamberSpeciesMasses;
     use crate::engine_config::EngineDefinition;
+    use crate::physics::chamber::ChamberSpeciesMasses;
     use crate::single_cylinder::rad_per_s_to_rpm;
 
     fn definition() -> EngineDefinition {
@@ -1077,6 +1109,7 @@ mod tests {
             torque_nm,
             power_kw: 5.0,
             map_pa: 101_325.0,
+            exhaust_exit_pressure_pa: 102_000.0,
             fuel_flow_mg_per_s: 200.0,
             air_flow_g_per_s: 12.0,
             bmep_kpa: 100.0,
@@ -1372,6 +1405,7 @@ mod tests {
                 intake_plenum_pressure_pa: 101_325.0,
                 intake_runner_pressure_pa: 101_325.0,
                 exhaust_runner_pressure_pa: 101_325.0,
+                exhaust_exit_pressure_pa: 101_325.0 + index as f64,
                 intake_effective_area_m2: 0.0001,
                 exhaust_effective_area_m2: 0.0002,
                 intake_mass_flow_kg_per_s: 0.01,
@@ -1398,6 +1432,12 @@ mod tests {
 
         let snapshot = aggregator.snapshot();
         assert!(snapshot.time_history.len() <= TIME_HISTORY_CAPACITY);
+        assert!(
+            snapshot
+                .time_history
+                .iter()
+                .any(|point| point.exhaust_exit_pressure_pa > 101_325.0)
+        );
     }
 
     #[test]
@@ -1415,6 +1455,7 @@ mod tests {
         let snapshot = aggregator.snapshot();
         assert_eq!(snapshot.engine_data.rpm_delta, 75.0);
         assert!(snapshot.angle_trace.pressure_pa.len() > 120);
+        assert!(snapshot.angle_trace.exhaust_exit_pressure_pa.len() > 120);
         assert!(
             snapshot
                 .angle_trace
@@ -1530,6 +1571,7 @@ mod tests {
             intake_plenum_pressure_pa: 101_325.0,
             intake_runner_pressure_pa: 101_325.0,
             exhaust_runner_pressure_pa: 101_325.0,
+            exhaust_exit_pressure_pa: 101_325.0 + angle_deg,
             intake_effective_area_m2: 0.0001,
             exhaust_effective_area_m2: 0.0002,
             intake_mass_flow_kg_per_s: 0.01,

@@ -2,7 +2,16 @@
   "metadata": {
     "name": "Isuzu 4ZE1 approximation",
     "manufacturer": "Isuzu",
-    "notes": "Based on data/engines/4ZE1.md. The current engine JSON schema models one 4-stroke cylinder, so this fixture represents one representative cylinder of the inline-four 4ZE1 rather than the full 1-3-4-2 engine. Bore, stroke, compression ratio, idle speed, base ignition timing, intake runner ID, combined runner volume, plenum volume, throttle diameter, exhaust runner ID, exhaust diameter, lambda data, and measured fuel-flow data come from the MD file. Bore and stroke calculate to about 641 cc per cylinder, about 2565 cc total, close to the 2559 cc sheet value. The shared 1.5 L plenum and 61 mm throttle are kept at their physical sizes because the current single-cylinder runner does not model the other three cylinders drawing from the same reservoir. The 1.0 L combined intake runner volume is divided by four to estimate one runner length from the 38 mm runner ID. Connecting rod length, intake close, exhaust timing, valve diameters, crank inertia, and exhaust runner length were not supplied, so they are placeholders. The MD lists intake opening as 13 deg but does not specify the full event set; this fixture uses the current working GN250-style 720-degree timing shape until complete 4ZE1 cam timing is available. Valve effective areas are placeholder aggregate orifice areas close to the assumed one-valve port areas so the larger 4ZE1 cylinder can breathe in the current model. Fuel mass per cycle is a per-cylinder estimate from the measured 4ZE1 fuel-flow table near the torque and power range. The current simulation still uses a single aggregate intake boundary and exhaust boundary, not explicit four-cylinder manifold phasing."
+    "notes": "Based on data/engines/4ZE1.md. The layout records the inline-four 1-3-4-2 firing order while the scalar geometry and combustion fields describe one representative 4-stroke cylinder. Bore, stroke, compression ratio, idle speed, base ignition timing, intake runner ID, combined runner volume, plenum volume, throttle diameter, exhaust runner ID, exhaust diameter, lambda data, and measured fuel-flow data come from the MD file. Bore and stroke calculate to about 641 cc per cylinder, about 2565 cc total, close to the 2559 cc sheet value. The shared 1.5 L plenum and 61 mm throttle are kept at their physical sizes because the current single-cylinder GUI path does not model the other three cylinders drawing from the same reservoir. The 1.0 L combined intake runner volume is divided by four to estimate one runner length from the 38 mm runner ID. Connecting rod length, intake close, exhaust timing, valve diameters, crank inertia, and exhaust runner length were not supplied, so they are placeholders. The MD lists intake opening as 13 deg but does not specify the full event set; this fixture uses the current working GN250-style 720-degree timing shape until complete 4ZE1 cam timing is available. Valve effective areas are placeholder aggregate orifice areas close to the assumed one-valve port areas so the larger 4ZE1 cylinder can breathe in the current model. Fuel mass per cycle is a per-cylinder estimate from the measured 4ZE1 fuel-flow table near the torque and power range. The multi-cylinder library runner can schedule per-cylinder phases from the layout, but shared manifold collector coupling is not yet calibrated for this fixture."
+  },
+  "layout": {
+    "cylinder_count": 4,
+    "firing_order": [
+      1,
+      3,
+      4,
+      2
+    ]
   },
   "geometry": {
     "bore_m": 0.0927,

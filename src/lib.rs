@@ -16,6 +16,7 @@ pub mod engine_config;
 pub mod engine_geometry;
 pub mod engine_handling;
 pub mod engine_loader;
+pub mod multi_cylinder;
 pub mod profiles;
 pub mod sign_conventions;
 pub mod simulation;

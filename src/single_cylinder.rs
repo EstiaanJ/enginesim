@@ -1,8 +1,3 @@
-use crate::physics::chamber::{
-    ChamberBoundary, ChamberProperties, ChamberSpeciesMasses, ChamberState,
-    DRY_AIR_OXYGEN_MASS_FRACTION, chamber_pressure_pa, integrate_internal_energy_rk4,
-    mixture_chamber_properties, species_internal_energy_j,
-};
 use crate::combustion::{
     BurnDurationInputs, IgnitionDelayInputs, WiebeParameters, air_fuel_ratio, burn_duration_rad,
     burn_species, cumulative_wiebe_burned_fraction, equivalence_ratio_from_air_fuel_ratio,
@@ -14,6 +9,11 @@ use crate::engine_geometry::{
     slider_crank_dx_dtheta_m_per_rad, slider_crank_volume_rate_m3_per_s,
 };
 use crate::engine_handling::EngineHandlingDefinition;
+use crate::physics::chamber::{
+    ChamberBoundary, ChamberProperties, ChamberSpeciesMasses, ChamberState,
+    DRY_AIR_OXYGEN_MASS_FRACTION, chamber_pressure_pa, integrate_internal_energy_rk4,
+    mixture_chamber_properties, species_internal_energy_j,
+};
 use crate::physics::flow::GasFlowProperties;
 use crate::physics::gas::cv;
 use crate::physics::pipe::{
@@ -152,6 +152,7 @@ pub struct SingleCylinderStepOutput {
     pub intake_plenum_pressure_pa: f64,
     pub intake_runner_pressure_pa: f64,
     pub exhaust_runner_pressure_pa: f64,
+    pub exhaust_exit_pressure_pa: f64,
     pub intake_effective_area_m2: f64,
     pub exhaust_effective_area_m2: f64,
     pub intake_mass_flow_kg_per_s: f64,
@@ -387,8 +388,10 @@ impl SingleCylinderEngine {
             .intake_exhaust
             .throttle_maximum_area_m2
             .max(1.0e-6);
-        let idle_throttle_maximum_area_m2 =
-            self.definition.intake_exhaust.effective_idle_throttle_area_m2();
+        let idle_throttle_maximum_area_m2 = self
+            .definition
+            .intake_exhaust
+            .effective_idle_throttle_area_m2();
         let throttle_effective_area_m2 =
             if let Some(area_fraction) = inputs.throttle_effective_area_fraction {
                 (throttle_maximum_area_m2 + idle_throttle_maximum_area_m2)
@@ -547,9 +550,8 @@ impl SingleCylinderEngine {
             // Sample the moving cylinder volume at each RK4 stage by advancing
             // the crank angle across the step at the fixed step speed.
             |fraction| {
-                let angle_rad = normalize_cycle_angle_rad(
-                    start_angle_rad + delta_angle_rad * fraction,
-                );
+                let angle_rad =
+                    normalize_cycle_angle_rad(start_angle_rad + delta_angle_rad * fraction);
                 (
                     cylinder_volume_m3(&self.definition, angle_rad),
                     cylinder_volume_rate_m3_per_s(
@@ -636,6 +638,12 @@ impl SingleCylinderEngine {
                 .expect("intake pipe should have at least one cell")
                 .pressure_pa(self.intake_pipe.geometry, pipe_properties),
             exhaust_runner_pressure_pa: self.exhaust_pipe.cells[0]
+                .pressure_pa(self.exhaust_pipe.geometry, pipe_properties),
+            exhaust_exit_pressure_pa: self
+                .exhaust_pipe
+                .cells
+                .last()
+                .expect("exhaust pipe should have at least one cell")
                 .pressure_pa(self.exhaust_pipe.geometry, pipe_properties),
             intake_effective_area_m2: intake_area_m2,
             exhaust_effective_area_m2: exhaust_area_m2,

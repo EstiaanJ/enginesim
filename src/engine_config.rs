@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EngineDefinition {
     pub metadata: EngineMetadata,
+    #[serde(default)]
+    pub layout: EngineLayoutDefinition,
     pub geometry: CylinderGeometryDefinition,
     pub gas: GasDefinition,
     pub boundaries: BoundaryDefinition,
@@ -29,6 +31,80 @@ pub struct EngineMetadata {
     pub name: String,
     pub manufacturer: String,
     pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EngineLayoutDefinition {
+    #[serde(default = "default_cylinder_count")]
+    pub cylinder_count: usize,
+    #[serde(default = "default_firing_order")]
+    pub firing_order: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crank_phase_offsets_deg: Vec<f64>,
+}
+
+impl Default for EngineLayoutDefinition {
+    fn default() -> Self {
+        Self {
+            cylinder_count: default_cylinder_count(),
+            firing_order: default_firing_order(),
+            crank_phase_offsets_deg: Vec::new(),
+        }
+    }
+}
+
+impl EngineLayoutDefinition {
+    pub fn cylinder_count(&self) -> usize {
+        self.cylinder_count.max(1)
+    }
+
+    pub fn normalized_firing_order(&self) -> Vec<usize> {
+        let cylinder_count = self.cylinder_count();
+        if self.firing_order.len() == cylinder_count
+            && self
+                .firing_order
+                .iter()
+                .all(|&cylinder| (1..=cylinder_count).contains(&cylinder))
+        {
+            let mut sorted = self.firing_order.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            if sorted.len() == cylinder_count {
+                return self.firing_order.clone();
+            }
+        }
+
+        (1..=cylinder_count).collect()
+    }
+
+    /// Global crank angle, in degrees, at which each cylinder reaches its
+    /// firing TDC. Index 0 is cylinder 1.
+    pub fn firing_phase_offsets_deg(&self) -> Vec<f64> {
+        let cylinder_count = self.cylinder_count();
+        if self.crank_phase_offsets_deg.len() == cylinder_count {
+            return self
+                .crank_phase_offsets_deg
+                .iter()
+                .map(|angle| angle.rem_euclid(720.0))
+                .collect();
+        }
+
+        let firing_order = self.normalized_firing_order();
+        let firing_interval_deg = 720.0 / cylinder_count as f64;
+        let mut phases = vec![0.0; cylinder_count];
+        for (order_index, cylinder_number) in firing_order.iter().copied().enumerate() {
+            phases[cylinder_number - 1] = order_index as f64 * firing_interval_deg;
+        }
+        phases
+    }
+}
+
+fn default_cylinder_count() -> usize {
+    1
+}
+
+fn default_firing_order() -> Vec<usize> {
+    vec![1]
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -178,6 +254,8 @@ mod tests {
         assert_eq!(definition.geometry.bore_m, 0.072);
         assert_eq!(definition.geometry.stroke_m, 0.0612);
         assert_eq!(definition.geometry.connecting_rod_length_m, 0.115);
+        assert_eq!(definition.layout.cylinder_count(), 1);
+        assert_eq!(definition.layout.normalized_firing_order(), vec![1]);
 
         for valve in [&definition.valves.intake, &definition.valves.exhaust] {
             assert!((0.0..=720.0).contains(&valve.open_angle_deg));
@@ -214,5 +292,37 @@ mod tests {
             EngineDefinition::from_json_str(&serialized).expect("serialized JSON should parse");
 
         assert_eq!(reparsed, definition);
+    }
+
+    #[test]
+    fn layout_computes_even_fire_phases_from_firing_order() {
+        let layout = EngineLayoutDefinition {
+            cylinder_count: 4,
+            firing_order: vec![1, 3, 4, 2],
+            crank_phase_offsets_deg: Vec::new(),
+        };
+
+        assert_eq!(layout.normalized_firing_order(), vec![1, 3, 4, 2]);
+        assert_eq!(
+            layout.firing_phase_offsets_deg(),
+            vec![0.0, 540.0, 180.0, 360.0]
+        );
+    }
+
+    #[test]
+    fn parses_4ze1_layout_from_json() {
+        let json = include_str!("../data/engines/4ZE1.json");
+        let definition = EngineDefinition::from_json_str(json).expect("4ZE1 JSON should parse");
+
+        assert_eq!(definition.metadata.name, "Isuzu 4ZE1 approximation");
+        assert_eq!(definition.layout.cylinder_count(), 4);
+        assert_eq!(
+            definition.layout.normalized_firing_order(),
+            vec![1, 3, 4, 2]
+        );
+        assert_eq!(
+            definition.layout.firing_phase_offsets_deg(),
+            vec![0.0, 540.0, 180.0, 360.0]
+        );
     }
 }

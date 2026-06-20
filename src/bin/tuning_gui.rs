@@ -748,6 +748,19 @@ impl TuningGuiApp {
                 );
                 angle_plot(
                     ui,
+                    "Exhaust Exit Pressure",
+                    "Pressure (kPa rel)",
+                    &[(
+                        "Pressure",
+                        &relative_pressure_points(
+                            &telemetry.angle_trace.exhaust_exit_pressure_pa,
+                            telemetry.engine_data.ambient_pressure_pa,
+                        ),
+                        Color32::from_rgb(230, 150, 110),
+                    )],
+                );
+                angle_plot(
+                    ui,
                     "Valve Gas Velocity",
                     "Velocity (m/s)",
                     &[
@@ -788,8 +801,10 @@ impl TuningGuiApp {
     /// at the current crank angle. Drawn from the committed config.
     fn draw_cycle_diagram(&self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Cycle Diagram — piston · strokes · valves · spark").strong());
-        let (response, painter) =
-            ui.allocate_painter(egui::vec2(ui.available_width(), 230.0), egui::Sense::hover());
+        let (response, painter) = ui.allocate_painter(
+            egui::vec2(ui.available_width(), 230.0),
+            egui::Sense::hover(),
+        );
         let rect = response.rect;
 
         let definition = self.session.committed_engine();
@@ -849,7 +864,10 @@ impl TuningGuiApp {
         let mut angle = 0.0;
         while angle <= ENGINE_CYCLE_DEG {
             let fraction = piston_fraction(angle, stroke_m, rod_m);
-            points.push(egui::pos2(x_of(angle), piston_top + fraction as f32 * piston_h));
+            points.push(egui::pos2(
+                x_of(angle),
+                piston_top + fraction as f32 * piston_h,
+            ));
             angle += 3.0;
         }
         painter.add(egui::Shape::line(
@@ -1016,7 +1034,8 @@ fn draw_valve_band<F: Fn(f64) -> f32>(
         vec![(open_deg, ENGINE_CYCLE_DEG), (0.0, close_deg)]
     };
     for (a0, a1) in segments {
-        let band = egui::Rect::from_min_max(egui::pos2(x_of(a0), y), egui::pos2(x_of(a1), y + height));
+        let band =
+            egui::Rect::from_min_max(egui::pos2(x_of(a0), y), egui::pos2(x_of(a1), y + height));
         painter.rect_filled(band, egui::CornerRadius::ZERO, color);
     }
 }
@@ -1099,7 +1118,14 @@ fn valve_controls(ui: &mut egui::Ui, label: &str, valve: &mut ValveDefinition) {
     });
 
     let mut diameter_mm = valve.valve_diameter_m * 1000.0;
-    if labelled_drag(ui, "Valve diameter", &mut diameter_mm, 0.1, 1.0..=80.0, " mm") {
+    if labelled_drag(
+        ui,
+        "Valve diameter",
+        &mut diameter_mm,
+        0.1,
+        1.0..=80.0,
+        " mm",
+    ) {
         valve.valve_diameter_m = diameter_mm / 1000.0;
     }
     ui.horizontal(|ui| {

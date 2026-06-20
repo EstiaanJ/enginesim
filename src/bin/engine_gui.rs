@@ -475,21 +475,25 @@ enum PlotPanel {
     CylinderTemperature,
     ValveEffectiveArea,
     ChamberMass,
+    ExhaustExitPressureAngle,
     RpmTime,
     TorqueTime,
     MapTime,
+    ExhaustExitPressureTime,
     TorqueRpm,
     PowerRpm,
 }
 
-const PLOT_PANELS: [PlotPanel; 9] = [
+const PLOT_PANELS: [PlotPanel; 11] = [
     PlotPanel::CylinderPressure,
     PlotPanel::CylinderTemperature,
     PlotPanel::ValveEffectiveArea,
     PlotPanel::ChamberMass,
+    PlotPanel::ExhaustExitPressureAngle,
     PlotPanel::RpmTime,
     PlotPanel::TorqueTime,
     PlotPanel::MapTime,
+    PlotPanel::ExhaustExitPressureTime,
     PlotPanel::TorqueRpm,
     PlotPanel::PowerRpm,
 ];
@@ -578,6 +582,19 @@ fn render_plot_panel(ui: &mut egui::Ui, panel: PlotPanel, telemetry: &EngineFram
                 ),
             ],
         ),
+        PlotPanel::ExhaustExitPressureAngle => angle_plot(
+            ui,
+            "Exhaust Exit Pressure",
+            "Pressure (kPa rel)",
+            &[(
+                "Pressure",
+                &relative_pressure_points(
+                    &telemetry.angle_trace.exhaust_exit_pressure_pa,
+                    telemetry.engine_data.ambient_pressure_pa,
+                ),
+                Color32::from_rgb(230, 150, 110),
+            )],
+        ),
         PlotPanel::RpmTime => time_plot(
             ui,
             "RPM Over Time",
@@ -598,6 +615,21 @@ fn render_plot_panel(ui: &mut egui::Ui, panel: PlotPanel, telemetry: &EngineFram
             "MAP (kPa)",
             &telemetry.time_history,
             |point| [point.time_seconds, point.map_pa / 1000.0],
+        ),
+        PlotPanel::ExhaustExitPressureTime => time_plot(
+            ui,
+            "Exhaust Exit Pressure Over Time",
+            "Pressure (kPa rel)",
+            &telemetry.time_history,
+            |point| {
+                [
+                    point.time_seconds,
+                    relative_kpa(
+                        point.exhaust_exit_pressure_pa,
+                        telemetry.engine_data.ambient_pressure_pa,
+                    ),
+                ]
+            },
         ),
         PlotPanel::TorqueRpm => rpm_history_plot(
             ui,

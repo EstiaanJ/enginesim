@@ -270,24 +270,24 @@ Status note: the implementation has already moved through Phase 5. The earlier p
 
 ## Phase 4: Multi-Cylinder Engine
 
-- [ ] Add engine configuration.
-  - [ ] Represent cylinder count, firing order and crank phase offsets.
-  - [ ] Share crank/flywheel inertia across cylinders.
-  - [ ] Aggregate cylinder torque onto the crank.
+- [x] Add engine configuration.
+  - [x] Represent cylinder count, firing order and crank phase offsets.
+  - [x] Share crank/flywheel inertia across cylinders.
+  - [x] Aggregate cylinder torque onto the crank.
 
-- [ ] Add cycle-level outputs.
-  - [ ] Per-cylinder pressure traces.
-  - [ ] Total instantaneous crank torque.
-  - [ ] Cycle-averaged indicated torque.
-  - [ ] RPM stability and cyclic variation metrics.
+- [x] Add cycle-level outputs.
+  - [x] Per-cylinder pressure traces.
+  - [x] Total instantaneous crank torque.
+  - [x] Cycle-averaged indicated torque.
+  - [x] RPM stability and cyclic variation metrics.
 
-- [ ] Phase 4 testing and validation.
-  - [ ] Test firing-order and crank-phase scheduling for common engine layouts.
-  - [ ] Test torque aggregation from multiple cylinders onto the shared crank.
-  - [ ] Test cylinder isolation: identical cylinders with phase offsets should produce phase-shifted matching traces.
-  - [ ] Test repeatability of multi-cycle multi-cylinder runs.
+- [x] Phase 4 testing and validation.
+  - [x] Test firing-order and crank-phase scheduling for common engine layouts.
+  - [x] Test torque aggregation from multiple cylinders onto the shared crank.
+  - [x] Test cylinder isolation: identical cylinders with phase offsets should produce phase-shifted matching traces.
+  - [x] Test repeatability of multi-cycle multi-cylinder runs.
   - [ ] Add regression baselines for total torque ripple, mean torque and per-cylinder peak pressure.
-  - [ ] Add validation checks that changing firing order changes torque trace phase but not mean torque for identical cylinders.
+  - [x] Add validation checks that changing firing order changes torque trace phase but not mean torque for identical cylinders.
 
 ## Phase 5: 1D Intake And Exhaust
 
@@ -320,8 +320,8 @@ Status note: the implementation has already moved through Phase 5. The earlier p
   - [x] Add mesh-refinement convergence checks for pressure-wave timing and amplitude.
   - [x] Add regression baselines for intake/exhaust pressure traces once runner, plenum and exhaust geometry are configured data rather than placeholder defaults.
   
-  - [ ] engine_gui Exhaust exit pressure pulse with respect to engine angle
-  - [ ] engine_gui Exhaust exit pressure with respect to time
+  - [x] engine_gui Exhaust exit pressure pulse with respect to engine angle
+  - [x] engine_gui Exhaust exit pressure with respect to time
 
 ## Phase 6: Losses, Controls And Calibration
 
