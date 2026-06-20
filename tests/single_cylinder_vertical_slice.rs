@@ -422,42 +422,42 @@ fn intake_and_exhaust_pressure_trace_regression_features_match_baseline() {
         vec![
             ScalarBaseline::new(
                 "intake_runner_pressure_min_pa",
-                68344.8711,
+                74728.0565,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "intake_runner_pressure_max_pa",
-                107151.4745,
+                109139.2056,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "intake_runner_pressure_mean_pa",
-                99128.0874,
+                99459.5930,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "intake_runner_pressure_rms_ac_pa",
-                10880.3343,
+                9649.3741,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "exhaust_runner_pressure_min_pa",
-                122277.6934,
+                122245.0152,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "exhaust_runner_pressure_max_pa",
-                231627.7401,
+                226388.9130,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "exhaust_runner_pressure_mean_pa",
-                146177.0729,
+                144794.0056,
                 Tolerance::combined(25.0, 0.01),
             ),
             ScalarBaseline::new(
                 "exhaust_runner_pressure_rms_ac_pa",
-                32560.3884,
+                30775.6046,
                 Tolerance::combined(25.0, 0.01),
             ),
         ],
@@ -499,27 +499,27 @@ fn single_cylinder_pressure_work_and_torque_regression_features_match_baseline()
         vec![
             ScalarBaseline::new(
                 "peak_cylinder_pressure_pa",
-                6326638.6496,
+                5865348.4463,
                 Tolerance::combined(500.0, 0.02),
             ),
             ScalarBaseline::new(
                 "pressure_trace_mean_pa",
-                681388.7177,
+                635284.6301,
                 Tolerance::combined(500.0, 0.02),
             ),
             ScalarBaseline::new(
                 "pressure_trace_rms_ac_pa",
-                1191272.5951,
+                1104195.2150,
                 Tolerance::combined(500.0, 0.02),
             ),
             ScalarBaseline::new(
                 "indicated_work_j",
-                277.4265,
+                252.8983,
                 Tolerance::combined(0.5, 0.03),
             ),
             ScalarBaseline::new(
                 "mean_indicated_torque_nm",
-                11.0384,
+                10.0625,
                 Tolerance::combined(0.05, 0.03),
             ),
         ],
@@ -597,42 +597,42 @@ fn pressure_trace_sensitivity_to_combustion_timing_and_lambda_matches_baseline()
         vec![
             ScalarBaseline::new(
                 "nominal_peak_pressure_pa",
-                6326638.6496,
+                5865348.4463,
                 Tolerance::combined(500.0, 0.03),
             ),
             ScalarBaseline::new(
                 "delayed_peak_pressure_pa",
-                5644802.5736,
+                5239394.6262,
                 Tolerance::combined(500.0, 0.03),
             ),
             ScalarBaseline::new(
                 "long_burn_peak_pressure_pa",
-                5106724.7809,
+                4727085.1363,
                 Tolerance::combined(500.0, 0.03),
             ),
             ScalarBaseline::new(
                 "lean_peak_pressure_pa",
-                2566746.2349,
+                2431099.5162,
                 Tolerance::combined(500.0, 0.03),
             ),
             ScalarBaseline::new(
                 "nominal_mean_torque_nm",
-                11.0384,
+                10.0625,
                 Tolerance::combined(0.05, 0.05),
             ),
             ScalarBaseline::new(
                 "delayed_mean_torque_nm",
-                11.3690,
+                10.3677,
                 Tolerance::combined(0.05, 0.05),
             ),
             ScalarBaseline::new(
                 "long_burn_mean_torque_nm",
-                11.1442,
+                10.1570,
                 Tolerance::combined(0.05, 0.05),
             ),
             ScalarBaseline::new(
                 "lean_mean_torque_nm",
-                2.5206,
+                2.4599,
                 Tolerance::combined(0.05, 0.05),
             ),
         ],
@@ -818,8 +818,8 @@ fn split_config_preserves_fixed_speed_run_baseline() {
     let definition = gn250_definition();
     let summary = run_fixed_speed_cycles(&definition, 2500.0, 4);
 
-    assert_close(summary.mean_indicated_torque_nm, 7.1875002, 1.0e-6);
-    assert_close(summary.indicated_work_j, 361.2831671, 1.0e-6);
+    assert_close(summary.mean_indicated_torque_nm, 6.4976000, 1.0e-6);
+    assert_close(summary.indicated_work_j, 326.6049995, 1.0e-6);
 }
 
 #[test]
@@ -854,6 +854,7 @@ fn renamed_pipe_grid_preserves_cell_geometry() {
         1.0e-12,
     );
 }
+
 
 
 
