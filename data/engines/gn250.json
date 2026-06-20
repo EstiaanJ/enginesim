@@ -4,6 +4,12 @@
     "manufacturer": "Suzuki",
     "notes": "Based on data/engines/250cc.md plus supplied GN250 calibration notes. Valve timing is converted to the local 720-degree convention. This modified EFI GN250 is represented as an SOHC four-valve head with two intake and two exhaust valves. The current model aggregates the single throttle-to-head intake path and the two-valve split into one intake boundary. The two exhaust primaries, approximately 1.4 m and 1.5 m, plus a 0.5 m combined straight pipe are approximated as one equivalent straight aggregate runner with the combined runner area. The injector is assumed to sit behind the throttle and before the head port, while the current 0D fueling model still supplies vapor to the chamber at the combustion event."
   },
+  "layout": {
+    "cylinder_count": 1,
+    "firing_order": [
+      1
+    ]
+  },
   "geometry": {
     "bore_m": 0.072,
     "stroke_m": 0.0612,
@@ -13,7 +19,7 @@
   "gas": {
     "gas_constant_j_per_kg_k": 287.0,
     "specific_heat_ratio": 1.4,
-    "minimum_mass_kg": 1e-9,
+    "minimum_mass_kg": 1e-09,
     "minimum_temperature_k": 1.0
   },
   "boundaries": {
@@ -26,16 +32,21 @@
   "intake_exhaust": {
     "intake_plenum_volume_m3": 0.0002,
     "throttle_maximum_area_m2": 0.001963495408493621,
-    "idle_throttle_maximum_area_m2": 0.00003,
+    "idle_throttle_maximum_area_m2": 3e-05,
     "intake_runner": {
-      "number_of_cells": 6,
+      "number_of_cells": 4,
       "total_length_m": 0.018,
       "area_m2": 0.0012566
     },
     "exhaust_runner": {
-      "number_of_cells": 15,
+      "number_of_cells": 8,
       "total_length_m": 1.95,
       "area_m2": 0.0007069
+    },
+    "exhaust_collector": {
+      "number_of_cells": 6,
+      "total_length_m": 0.6,
+      "area_m2": 0.0009621
     }
   },
   "valves": {
@@ -44,7 +55,9 @@
       "close_angle_deg": 650.0,
       "valve_diameter_m": 0.03,
       "valve_count": 2,
-      "max_effective_area_m2": 0.00032,
+      "max_lift_m": 0.0016977,
+      "opening_ramp_fraction": 0.5,
+      "plateau_fraction": 0.0,
       "discharge_coefficient": 0.9
     },
     "exhaust": {
@@ -52,7 +65,9 @@
       "close_angle_deg": 398.0,
       "valve_diameter_m": 0.022,
       "valve_count": 2,
-      "max_effective_area_m2": 0.00023,
+      "max_lift_m": 0.0016639,
+      "opening_ramp_fraction": 0.5,
+      "plateau_fraction": 0.0,
       "discharge_coefficient": 0.8
     }
   },
@@ -64,7 +79,7 @@
   "combustion": {
     "enabled": true,
     "lambda_target": 1.0,
-    "fuel_mass_per_cycle_kg": 0.000012,
+    "fuel_mass_per_cycle_kg": 1.2e-05,
     "fuel_lower_heating_value_j_per_kg": 44000000.0,
     "combustion_efficiency": 0.9,
     "heat_loss_fraction": 0.2,

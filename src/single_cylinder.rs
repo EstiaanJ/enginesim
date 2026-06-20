@@ -18,7 +18,7 @@ use crate::physics::flow::GasFlowProperties;
 use crate::physics::gas::cv;
 use crate::physics::pipe::{
     Pipe1D, PipeBoundary, PipeBoundaryFlux, PipeCellGeometry, PlenumState, ThrottlePlenumInput,
-    apply_boundary_flux_to_cell, pipe_cell_to_chamber_orifice_flux,
+    apply_boundary_flux_to_cell, pipe_cell_to_chamber_orifice_flux, pipe_to_pipe_interface_flux,
 };
 use crate::profiles::SimulationProfile;
 use crate::simulation::{StepContext, StepModel};
@@ -39,6 +39,10 @@ pub struct SingleCylinderEngine {
     intake_plenum: PlenumState,
     intake_pipe: Pipe1D,
     exhaust_pipe: Pipe1D,
+    /// Optional tailpipe downstream of the exhaust primary, joined to it by a
+    /// momentum-preserving area-change interface. `None` reproduces the
+    /// original single-pipe exhaust.
+    exhaust_collector: Option<Pipe1D>,
     crank_angle_rad: f64,
     crank_speed_rad_per_s: f64,
     pending_combustion: Option<PendingCombustion>,
@@ -152,6 +156,9 @@ pub struct SingleCylinderStepOutput {
     pub intake_plenum_pressure_pa: f64,
     pub intake_runner_pressure_pa: f64,
     pub exhaust_runner_pressure_pa: f64,
+    /// Pressure in the collector tailpipe at the junction end, or `None` when
+    /// the engine has no exhaust collector.
+    pub exhaust_collector_pressure_pa: Option<f64>,
     pub exhaust_exit_pressure_pa: f64,
     pub intake_effective_area_m2: f64,
     pub exhaust_effective_area_m2: f64,
@@ -234,6 +241,7 @@ impl SingleCylinderEngine {
         let intake_plenum = default_intake_plenum(&definition);
         let intake_pipe = default_intake_pipe(&definition);
         let exhaust_pipe = default_exhaust_pipe(&definition);
+        let exhaust_collector = default_exhaust_collector(&definition);
 
         Self {
             definition,
@@ -243,6 +251,7 @@ impl SingleCylinderEngine {
             intake_plenum,
             intake_pipe,
             exhaust_pipe,
+            exhaust_collector,
             crank_angle_rad: normalize_cycle_angle_rad(crank_angle_rad),
             crank_speed_rad_per_s,
             pending_combustion: None,
@@ -258,6 +267,45 @@ impl SingleCylinderEngine {
             elapsed_time_seconds: 0.0,
             over_temperature_warning_emitted: false,
         }
+    }
+
+    /// Couple the exhaust primary's far end to the collector tailpipe across a
+    /// momentum-preserving area-change interface (the two symmetric GN250
+    /// primaries reduce to one primary feeding a wider single exhaust). No-op
+    /// when the engine has no collector. The equal-and-opposite interface flux
+    /// conserves mass/energy and, crucially, carries the exhaust column's
+    /// momentum through the expansion so blowdown is not artificially throttled.
+    fn step_exhaust_collector(&mut self, timestep_seconds: f64) {
+        let pipe_props = pipe_properties(&self.definition);
+        let Some(collector) = self.exhaust_collector.as_mut() else {
+            return;
+        };
+
+        let primary_cell = *self
+            .exhaust_pipe
+            .cells
+            .last()
+            .expect("exhaust primary should have at least one cell");
+        let collector_cell = collector.cells[0];
+        let interface_flux = pipe_to_pipe_interface_flux(
+            primary_cell,
+            self.exhaust_pipe.geometry,
+            collector_cell,
+            collector.geometry,
+            pipe_props,
+        );
+
+        // Positive interface flux flows primary -> collector: the primary loses
+        // it, the collector gains it.
+        apply_boundary_flux_to_cell(&mut collector.cells[0], interface_flux, timestep_seconds);
+        apply_boundary_flux_to_cell(
+            self.exhaust_pipe
+                .cells
+                .last_mut()
+                .expect("exhaust primary should have at least one cell"),
+            interface_flux.scaled(-1.0),
+            timestep_seconds,
+        );
     }
 
     pub fn definition(&self) -> &EngineDefinition {
@@ -439,15 +487,32 @@ impl SingleCylinderEngine {
             PipeBoundary::Closed,
             timestep_seconds,
         );
+        let open_exhaust_boundary = PipeBoundary::OpenPressure {
+            pressure_pa: self.definition.boundaries.exhaust_pressure_pa,
+            temperature_k: self.definition.boundaries.exhaust_temperature_k,
+        };
+        // With a collector the primary's far end joins the lumped junction
+        // (closed wall here; the junction flux is applied separately below);
+        // without one it vents straight to the open boundary as before.
+        let primary_far_boundary = if self.exhaust_collector.is_some() {
+            PipeBoundary::Closed
+        } else {
+            open_exhaust_boundary
+        };
         step_pipe_stable(
             &mut self.exhaust_pipe,
             PipeBoundary::Closed,
-            PipeBoundary::OpenPressure {
-                pressure_pa: self.definition.boundaries.exhaust_pressure_pa,
-                temperature_k: self.definition.boundaries.exhaust_temperature_k,
-            },
+            primary_far_boundary,
             timestep_seconds,
         );
+        if let Some(collector) = self.exhaust_collector.as_mut() {
+            step_pipe_stable(
+                collector,
+                PipeBoundary::Closed,
+                open_exhaust_boundary,
+                timestep_seconds,
+            );
+        }
         let combustion_step = self.combustion_step_result(
             start_angle_rad,
             end_angle_rad,
@@ -530,6 +595,9 @@ impl SingleCylinderEngine {
             exhaust_flux.scaled(-1.0),
             timestep_seconds,
         );
+        // Couple the exhaust primary to the tailpipe across the area-change
+        // interface (no-op when no collector is configured).
+        self.step_exhaust_collector(timestep_seconds);
         let intake_species_flow_kg_per_s = intake_flux.species_kg_per_s;
         let exhaust_species_flow_kg_per_s =
             scaled_species_flow(exhaust_flux.species_kg_per_s, -1.0);
@@ -639,12 +707,19 @@ impl SingleCylinderEngine {
                 .pressure_pa(self.intake_pipe.geometry, pipe_properties),
             exhaust_runner_pressure_pa: self.exhaust_pipe.cells[0]
                 .pressure_pa(self.exhaust_pipe.geometry, pipe_properties),
-            exhaust_exit_pressure_pa: self
-                .exhaust_pipe
-                .cells
-                .last()
-                .expect("exhaust pipe should have at least one cell")
-                .pressure_pa(self.exhaust_pipe.geometry, pipe_properties),
+            exhaust_collector_pressure_pa: self.exhaust_collector.as_ref().map(|collector| {
+                collector.cells[0].pressure_pa(collector.geometry, pipe_properties)
+            }),
+            exhaust_exit_pressure_pa: {
+                // The true open-boundary exit is the collector's far cell when a
+                // collector is present, otherwise the exhaust primary's far cell.
+                let exit_pipe = self.exhaust_collector.as_ref().unwrap_or(&self.exhaust_pipe);
+                exit_pipe
+                    .cells
+                    .last()
+                    .expect("exhaust pipe should have at least one cell")
+                    .pressure_pa(exit_pipe.geometry, pipe_properties)
+            },
             intake_effective_area_m2: intake_area_m2,
             exhaust_effective_area_m2: exhaust_area_m2,
             intake_mass_flow_kg_per_s: intake_flux.mass_kg_per_s,
@@ -1203,6 +1278,20 @@ fn default_exhaust_pipe(definition: &EngineDefinition) -> Pipe1D {
         definition.boundaries.exhaust_pressure_pa,
         definition.boundaries.exhaust_temperature_k,
     )
+}
+
+fn default_exhaust_collector(definition: &EngineDefinition) -> Option<Pipe1D> {
+    let collector = definition.intake_exhaust.exhaust_collector?;
+    Some(Pipe1D::uniform(
+        collector.number_of_cells.max(1),
+        PipeCellGeometry {
+            length_m: collector.cell_length_m().max(1.0e-4),
+            area_m2: collector.area_m2.max(1.0e-6),
+        },
+        pipe_properties(definition),
+        definition.boundaries.exhaust_pressure_pa,
+        definition.boundaries.exhaust_temperature_k,
+    ))
 }
 
 fn pipe_properties(definition: &EngineDefinition) -> GasFlowProperties {
@@ -1962,6 +2051,46 @@ mod tests {
 
         assert!(output.intake_effective_area_m2 > 0.0);
         assert!(output.intake_mass_flow_kg_per_s < 0.0);
+    }
+
+    #[test]
+    fn exhaust_collector_is_optional_and_affects_only_the_exit_path() {
+        // Without a collector the exit pressure is reported and no collector
+        // pressure exists; the single-pipe path is unchanged.
+        let mut no_collector = definition();
+        no_collector.intake_exhaust.exhaust_collector = None;
+        let mut engine = SingleCylinderEngine::from_definition(no_collector);
+        let output = engine.step(SingleCylinderStepInputs {
+            fixed_crank_speed_rad_per_s: Some(rpm_to_rad_per_s(3000.0)),
+            ..SingleCylinderStepInputs::default()
+        });
+        assert!(output.exhaust_collector_pressure_pa.is_none());
+        assert!(output.exhaust_exit_pressure_pa > 0.0);
+
+        // With a collector the engine stays stable and reports a finite,
+        // positive collector pressure distinct from the open boundary.
+        let mut with_collector = definition();
+        with_collector.intake_exhaust.exhaust_collector = Some(crate::engine_config::PipeDefinition {
+            number_of_cells: 6,
+            total_length_m: 0.6,
+            area_m2: 0.00096,
+        });
+        let mut engine = SingleCylinderEngine::from_definition(with_collector);
+        let mut last = engine.step(SingleCylinderStepInputs {
+            fixed_crank_speed_rad_per_s: Some(rpm_to_rad_per_s(3000.0)),
+            ..SingleCylinderStepInputs::default()
+        });
+        for _ in 0..2000 {
+            last = engine.step(SingleCylinderStepInputs {
+                fixed_crank_speed_rad_per_s: Some(rpm_to_rad_per_s(3000.0)),
+                ..SingleCylinderStepInputs::default()
+            });
+        }
+        let collector_pressure = last
+            .exhaust_collector_pressure_pa
+            .expect("collector pressure should be reported");
+        assert!(collector_pressure.is_finite() && collector_pressure > 0.0);
+        assert!(last.exhaust_exit_pressure_pa.is_finite() && last.exhaust_exit_pressure_pa > 0.0);
     }
 
     #[test]

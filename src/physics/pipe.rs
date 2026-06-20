@@ -537,6 +537,32 @@ pub fn open_pressure_ghost_cell(
     )
 }
 
+/// Momentum-preserving Rusanov flux across an area change joining two pipe
+/// segments (e.g. an exhaust primary merging into a larger collector tailpipe).
+/// Both end cells are resampled onto a shared throat geometry so their *actual*
+/// velocities drive the flux — unlike `pipe_cell_to_chamber_orifice_flux`,
+/// which couples to a stagnant 0D node and therefore destroys the through-pipe
+/// momentum (and so over-restricts violent exhaust blowdown).
+pub fn pipe_to_pipe_interface_flux(
+    left_cell: PipeCellState,
+    left_geometry: PipeCellGeometry,
+    right_cell: PipeCellState,
+    right_geometry: PipeCellGeometry,
+    properties: GasFlowProperties,
+) -> PipeBoundaryFlux {
+    let throat_area_m2 = left_geometry
+        .area_m2
+        .min(right_geometry.area_m2)
+        .max(1.0e-9);
+    let interface_geometry = PipeCellGeometry {
+        length_m: (0.5 * (left_geometry.length_m + right_geometry.length_m)).max(1.0e-9),
+        area_m2: throat_area_m2,
+    };
+    let left = resize_cell_to_geometry(left_cell, left_geometry, interface_geometry, properties);
+    let right = resize_cell_to_geometry(right_cell, right_geometry, interface_geometry, properties);
+    rusanov_flux(left, right, interface_geometry, properties)
+}
+
 pub fn pipe_cell_to_chamber_orifice_flux(
     pipe_cell: PipeCellState,
     chamber_pressure_pa: f64,
@@ -762,6 +788,47 @@ mod tests {
 
         assert!(forward.mass_kg_per_s > 0.0);
         assert!(reverse.mass_kg_per_s < 0.0);
+    }
+
+    #[test]
+    fn pipe_interface_flux_drives_flow_across_area_change_and_preserves_momentum() {
+        let primary_geom = PipeCellGeometry {
+            length_m: 0.05,
+            area_m2: 7.0e-4,
+        };
+        let collector_geom = PipeCellGeometry {
+            length_m: 0.10,
+            area_m2: 9.6e-4,
+        };
+        let high = PipeCellState::from_pressure_temperature_velocity(
+            300_000.0,
+            700.0,
+            120.0,
+            primary_geom,
+            properties(),
+        );
+        let low = PipeCellState::from_pressure_temperature_velocity(
+            101_325.0,
+            700.0,
+            0.0,
+            collector_geom,
+            properties(),
+        );
+
+        // High-pressure, fast primary drives flow into the collector.
+        let forward =
+            pipe_to_pipe_interface_flux(high, primary_geom, low, collector_geom, properties());
+        assert!(forward.mass_kg_per_s > 0.0, "flow should go primary -> collector");
+
+        // Reversing the operands reverses the sign (antisymmetry => conservation
+        // when applied equal-and-opposite to the two ends).
+        let reverse =
+            pipe_to_pipe_interface_flux(low, collector_geom, high, primary_geom, properties());
+        assert!(reverse.mass_kg_per_s < 0.0);
+
+        // The incoming primary momentum survives the expansion (a stagnant 0D
+        // node would zero it out), so the momentum flux is strongly positive.
+        assert!(forward.momentum_n > 0.0);
     }
 
     #[test]

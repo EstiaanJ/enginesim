@@ -13,7 +13,7 @@
   "gas": {
     "gas_constant_j_per_kg_k": 287.0,
     "specific_heat_ratio": 1.4,
-    "minimum_mass_kg": 1e-9,
+    "minimum_mass_kg": 1e-09,
     "minimum_temperature_k": 1.0
   },
   "boundaries": {
@@ -29,7 +29,9 @@
       "close_angle_deg": 582.0,
       "valve_diameter_m": 0.026,
       "valve_count": 2,
-      "max_effective_area_m2": 0.00032,
+      "max_lift_m": 0.0019588,
+      "opening_ramp_fraction": 0.5,
+      "plateau_fraction": 0.0,
       "discharge_coefficient": 0.7
     },
     "exhaust": {
@@ -37,7 +39,9 @@
       "close_angle_deg": 370.0,
       "valve_diameter_m": 0.022,
       "valve_count": 2,
-      "max_effective_area_m2": 0.00023,
+      "max_lift_m": 0.0016639,
+      "opening_ramp_fraction": 0.5,
+      "plateau_fraction": 0.0,
       "discharge_coefficient": 0.7
     }
   },
@@ -49,7 +53,7 @@
   "combustion": {
     "enabled": true,
     "lambda_target": 1.0,
-    "fuel_mass_per_cycle_kg": 0.000012,
+    "fuel_mass_per_cycle_kg": 1.2e-05,
     "fuel_lower_heating_value_j_per_kg": 44000000.0,
     "combustion_efficiency": 0.9,
     "heat_loss_fraction": 0.2,

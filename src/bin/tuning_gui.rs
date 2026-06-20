@@ -26,6 +26,7 @@ use enginesim::engine_loader::{
 };
 use enginesim::profiles::SimulationProfile;
 use enginesim::single_cylinder::{SingleCylinderEngine, rad_per_s_to_rpm, spark_angle_deg_for_rpm};
+use enginesim::valve::ValveEvent;
 use enginesim::telemetry::{
     EngineControls, EngineFrameTelemetry, MAP_OVERRIDE_MAX_PA, TelemetryAggregator,
     TelemetryAvailability, TelemetryScalar, default_profile_for_gui,
@@ -494,9 +495,11 @@ impl TuningGuiApp {
                 ui.separator();
                 runner_controls(
                     ui,
-                    "Exhaust Runner",
+                    "Exhaust Primary",
                     &mut draft.intake_exhaust.exhaust_runner,
                 );
+                ui.separator();
+                exhaust_collector_controls(ui, draft);
             });
 
         egui::CollapsingHeader::new("Intake / Throttle")
@@ -1060,6 +1063,29 @@ fn runner_controls(ui: &mut egui::Ui, label: &str, runner: &mut PipeDefinition) 
     ));
 }
 
+/// Optional exhaust tailpipe downstream of the primary, joined by a lumped
+/// junction (the GN250 two-primary merge into a single exhaust).
+fn exhaust_collector_controls(ui: &mut egui::Ui, draft: &mut EngineDefinition) {
+    let mut enabled = draft.intake_exhaust.exhaust_collector.is_some();
+    if ui
+        .checkbox(&mut enabled, "Exhaust collector / tailpipe")
+        .changed()
+    {
+        draft.intake_exhaust.exhaust_collector = if enabled {
+            Some(PipeDefinition {
+                number_of_cells: 6,
+                total_length_m: 0.6,
+                area_m2: area_m2_from_diameter_mm(35.0),
+            })
+        } else {
+            None
+        };
+    }
+    if let Some(collector) = draft.intake_exhaust.exhaust_collector.as_mut() {
+        runner_controls(ui, "Collector", collector);
+    }
+}
+
 /// Edit a flow area as a circular diameter in mm. Returns true on change.
 fn diameter_input(ui: &mut egui::Ui, label: &str, area_m2: &mut f64) -> bool {
     let mut changed = false;
@@ -1146,17 +1172,36 @@ fn valve_controls(ui: &mut egui::Ui, label: &str, valve: &mut ValveDefinition) {
         0.0..=1.0,
         "",
     );
-    let mut max_area_mm2 = valve.max_effective_area_m2 * 1.0e6;
-    if labelled_drag(
-        ui,
-        "Max eff. area",
-        &mut max_area_mm2,
-        1.0,
-        1.0..=2000.0,
-        " mm^2",
-    ) {
-        valve.max_effective_area_m2 = max_area_mm2 / 1.0e6;
+    let mut max_lift_mm = valve.max_lift_m * 1000.0;
+    if labelled_drag(ui, "Max lift", &mut max_lift_mm, 0.05, 0.1..=20.0, " mm") {
+        valve.max_lift_m = max_lift_mm / 1000.0;
     }
+    labelled_drag(
+        ui,
+        "Opening ramp",
+        &mut valve.opening_ramp_fraction,
+        0.01,
+        0.05..=1.0,
+        "",
+    );
+    // Keep plateau within the remaining duration after the opening ramp.
+    let max_plateau = (1.0 - valve.opening_ramp_fraction).max(0.0);
+    valve.plateau_fraction = valve.plateau_fraction.clamp(0.0, max_plateau);
+    labelled_drag(
+        ui,
+        "Plateau",
+        &mut valve.plateau_fraction,
+        0.01,
+        0.0..=max_plateau,
+        "",
+    );
+    // Derived peak effective area, shown for reference (curtain area capped by
+    // the valve-head circle, summed over all valves).
+    let event = ValveEvent::from_definition(*valve);
+    ui.small(format!(
+        "peak eff. area {:.1} mm^2",
+        event.peak_effective_area_m2() * 1.0e6
+    ));
 }
 
 /// Edit a spark advance, honouring the absolute/BTDC angle-entry toggle. The

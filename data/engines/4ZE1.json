@@ -22,7 +22,7 @@
   "gas": {
     "gas_constant_j_per_kg_k": 287.0,
     "specific_heat_ratio": 1.4,
-    "minimum_mass_kg": 1e-9,
+    "minimum_mass_kg": 1e-09,
     "minimum_temperature_k": 1.0
   },
   "boundaries": {
@@ -35,7 +35,7 @@
   "intake_exhaust": {
     "intake_plenum_volume_m3": 0.0015,
     "throttle_maximum_area_m2": 0.002922466566001905,
-    "idle_throttle_maximum_area_m2": 0.00005,
+    "idle_throttle_maximum_area_m2": 5e-05,
     "intake_runner": {
       "number_of_cells": 8,
       "total_length_m": 0.22043620926855312,
@@ -53,7 +53,9 @@
       "close_angle_deg": 650.0,
       "valve_diameter_m": 0.045,
       "valve_count": 1,
-      "max_effective_area_m2": 0.0013,
+      "max_lift_m": 0.0091956,
+      "opening_ramp_fraction": 0.5,
+      "plateau_fraction": 0.0,
       "discharge_coefficient": 0.9
     },
     "exhaust": {
@@ -61,7 +63,9 @@
       "close_angle_deg": 398.0,
       "valve_diameter_m": 0.037,
       "valve_count": 1,
-      "max_effective_area_m2": 0.0009,
+      "max_lift_m": 0.0077427,
+      "opening_ramp_fraction": 0.5,
+      "plateau_fraction": 0.0,
       "discharge_coefficient": 0.85
     }
   },
@@ -73,7 +77,7 @@
   "combustion": {
     "enabled": true,
     "lambda_target": 0.91,
-    "fuel_mass_per_cycle_kg": 0.000055,
+    "fuel_mass_per_cycle_kg": 5.5e-05,
     "fuel_lower_heating_value_j_per_kg": 44000000.0,
     "combustion_efficiency": 0.9,
     "heat_loss_fraction": 0.2,

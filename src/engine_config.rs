@@ -140,9 +140,17 @@ pub struct IntakeExhaustDefinition {
     pub idle_throttle_maximum_area_m2: Option<f64>,
     pub intake_runner: PipeDefinition,
     pub exhaust_runner: PipeDefinition,
+    /// Optional tailpipe downstream of the exhaust primary runner. When present
+    /// the primary and collector are joined by a momentum-preserving area-change
+    /// interface (the merge of the two GN250 exhaust primaries into one
+    /// exhaust). When absent the exhaust primary vents straight to the open
+    /// boundary, which is the original single-pipe behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exhaust_collector: Option<PipeDefinition>,
 }
 
 impl IntakeExhaustDefinition {
+
     /// Effective maximum idle-throttle bypass area, falling back to 10% of the
     /// main throttle area when not explicitly configured. Single source of truth
     /// shared by the runner (`single_cylinder`) and the GUI control mapping
@@ -170,6 +178,7 @@ impl Default for IntakeExhaustDefinition {
                 total_length_m: 0.4,
                 area_m2: 0.000345,
             },
+            exhaust_collector: None,
         }
     }
 }
@@ -202,8 +211,27 @@ pub struct ValveDefinition {
     pub close_angle_deg: f64,
     pub valve_diameter_m: f64,
     pub valve_count: u32,
-    pub max_effective_area_m2: f64,
+    /// Peak valve lift (deflection) at full opening. The instantaneous flow
+    /// area is derived from this and `valve_diameter_m`/`valve_count`, replacing
+    /// the former explicit `max_effective_area_m2`.
+    pub max_lift_m: f64,
+    /// Fraction of the open duration spent ramping to full lift (how quickly
+    /// the cam opens). `0.5` with `plateau_fraction = 0.0` gives the legacy
+    /// symmetric cosine lobe.
+    #[serde(default = "default_opening_ramp_fraction")]
+    pub opening_ramp_fraction: f64,
+    /// Fraction of the open duration held at full lift (cam dwell).
+    #[serde(default = "default_plateau_fraction")]
+    pub plateau_fraction: f64,
     pub discharge_coefficient: f64,
+}
+
+fn default_opening_ramp_fraction() -> f64 {
+    0.5
+}
+
+fn default_plateau_fraction() -> f64 {
+    0.0
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -262,6 +290,10 @@ mod tests {
             assert!((0.0..=720.0).contains(&valve.close_angle_deg));
             assert!(valve.valve_diameter_m > 0.0);
             assert!(valve.valve_count >= 1);
+            assert!(valve.max_lift_m > 0.0);
+            assert!(valve.opening_ramp_fraction > 0.0 && valve.opening_ramp_fraction <= 1.0);
+            assert!((0.0..1.0).contains(&valve.plateau_fraction));
+            assert!(valve.opening_ramp_fraction + valve.plateau_fraction <= 1.0 + 1.0e-9);
             assert!((0.0..=1.0).contains(&valve.discharge_coefficient));
         }
 
