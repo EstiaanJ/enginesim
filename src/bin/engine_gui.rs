@@ -4,12 +4,20 @@ use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Line, Plot, PlotPoints, Points};
 
 use enginesim::engine_config::EngineDefinition;
+use enginesim::engine_handling::EngineHandlingDefinition;
 use enginesim::profiles::SimulationProfile;
 use enginesim::single_cylinder::{SingleCylinderEngine, rad_per_s_to_rpm};
 use enginesim::telemetry::{
-    AngleTraceSnapshot, EngineControls, EngineFrameTelemetry, TelemetryAggregator,
-    TelemetryAvailability, default_profile_for_gui,
+    EngineControls, EngineFrameTelemetry, TelemetryAggregator, TelemetryAvailability,
+    default_profile_for_gui,
 };
+
+const SUMMARY_PANEL_HEIGHT: f32 = 52.0;
+const METRIC_CARD_WIDTH: f32 = 150.0;
+const METRIC_CARD_HEIGHT: f32 = 36.0;
+const PLOT_ROW_SPACING: f32 = 12.0;
+const MIN_TWO_COLUMN_WIDTH: f32 = 900.0;
+const MIN_THREE_COLUMN_WIDTH: f32 = 1_550.0;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
@@ -22,12 +30,14 @@ fn main() -> eframe::Result<()> {
 
 struct EngineGuiApp {
     definition: EngineDefinition,
+    handling: EngineHandlingDefinition,
     profile: SimulationProfile,
     engine: SingleCylinderEngine,
     controls: EngineControls,
     telemetry: TelemetryAggregator,
     latest_frame: EngineFrameTelemetry,
     running: bool,
+    redline_cut_remaining_seconds: f64,
     last_wall_clock: Instant,
 }
 
@@ -36,7 +46,11 @@ impl EngineGuiApp {
         let definition =
             EngineDefinition::from_json_str(include_str!("../../data/engines/gn250.json"))
                 .expect("bundled GN250 JSON should parse");
-        let profile = default_profile_for_gui(&definition);
+        let handling = EngineHandlingDefinition::from_json_str(include_str!(
+            "../../data/engines/gn250.handling.json"
+        ))
+        .expect("bundled GN250 handling JSON should parse");
+        let profile = default_profile_for_gui(&handling);
         let controls = EngineControls::default();
         let engine =
             SingleCylinderEngine::from_definition_with_profile(definition.clone(), profile);
@@ -45,12 +59,14 @@ impl EngineGuiApp {
 
         Self {
             definition,
+            handling,
             profile,
             engine,
             controls,
             telemetry,
             latest_frame,
             running: true,
+            redline_cut_remaining_seconds: 0.0,
             last_wall_clock: Instant::now(),
         }
     }
@@ -62,6 +78,7 @@ impl EngineGuiApp {
         );
         self.telemetry = TelemetryAggregator::new(self.definition.clone(), self.controls);
         self.latest_frame = self.telemetry.snapshot();
+        self.redline_cut_remaining_seconds = 0.0;
         self.last_wall_clock = Instant::now();
     }
 
@@ -79,11 +96,22 @@ impl EngineGuiApp {
 
         self.telemetry.set_controls(self.controls);
         for _ in 0..steps.max(1) {
-            let output = self.engine.step(
-                self.controls
-                    .to_step_inputs(rad_per_s_to_rpm(self.engine.crank_speed_rad_per_s())),
-            );
+            let current_rpm = rad_per_s_to_rpm(self.engine.crank_speed_rad_per_s());
+            if current_rpm >= self.controls.redline_spark_cut_rpm {
+                self.redline_cut_remaining_seconds =
+                    self.handling.redline_cut_time_seconds.max(0.0);
+            }
+            let redline_cut_active = self.redline_cut_remaining_seconds > 0.0;
+            let output = self
+                .engine
+                .step(self.controls.to_step_inputs_with_redline_cut_active(
+                    &self.definition,
+                    current_rpm,
+                    redline_cut_active,
+                ));
             self.telemetry.ingest_step_output(output, timestep_seconds);
+            self.redline_cut_remaining_seconds =
+                (self.redline_cut_remaining_seconds - timestep_seconds).max(0.0);
             if let Some(frame) = self.telemetry.publish_ready() {
                 self.latest_frame = frame;
             }
@@ -124,7 +152,7 @@ impl eframe::App for EngineGuiApp {
                 if profile_kind != self.profile.kind {
                     self.profile = match profile_kind {
                         enginesim::profiles::SimulationProfileKind::RealTime => {
-                            default_profile_for_gui(&self.definition)
+                            default_profile_for_gui(&self.handling)
                         }
                         enginesim::profiles::SimulationProfileKind::Render => {
                             SimulationProfile::render()
@@ -139,18 +167,18 @@ impl eframe::App for EngineGuiApp {
                         .suffix(" frac"),
                 );
                 ui.add(
-                    egui::Slider::new(&mut self.controls.idle_leak_fraction, 0.0..=0.25)
-                        .text("Idle Leak")
+                    egui::Slider::new(&mut self.controls.idle_throttle_fraction, 0.0..=1.0)
+                        .text("Idle Throttle")
                         .suffix(" frac"),
                 );
                 ui.add(
-                    egui::Slider::new(&mut self.controls.lambda_target, 0.8..=1.2)
+                    egui::Slider::new(&mut self.controls.lambda_target, 0.1..=2.0)
                         .text("Lambda Target"),
                 );
                 ui.separator();
                 ui.checkbox(&mut self.controls.starter_enabled, "Starter");
                 ui.add(
-                    egui::Slider::new(&mut self.controls.starter_torque_nm, 0.0..=60.0)
+                    egui::Slider::new(&mut self.controls.starter_torque_nm, 0.0..=120.0)
                         .text("Starter Torque")
                         .suffix(" Nm"),
                 );
@@ -160,9 +188,12 @@ impl eframe::App for EngineGuiApp {
                         .suffix(" rpm"),
                 );
                 ui.add(
-                    egui::Slider::new(&mut self.controls.added_inertia_kg_m2, 0.0..=0.05)
-                        .text("Added Inertia")
-                        .suffix(" kg m^2"),
+                    egui::Slider::new(
+                        &mut self.controls.added_inertia_kg_m2,
+                        0.0..=self.handling.max_added_inertia_kg_m2.max(0.0),
+                    )
+                    .text("Added Inertia")
+                    .suffix(" kg m^2"),
                 );
                 ui.add(
                     egui::Slider::new(&mut self.controls.added_torque_load_nm, 0.0..=40.0)
@@ -179,149 +210,122 @@ impl eframe::App for EngineGuiApp {
                 ui.separator();
                 ui.checkbox(&mut self.controls.dyno_mode_enabled, "Dyno Mode");
                 ui.add(
-                    egui::Slider::new(&mut self.controls.dyno_target_rpm, 500.0..=9000.0)
+                    egui::Slider::new(&mut self.controls.dyno_target_rpm, 1.0..=9000.0)
                         .text("Dyno Target")
                         .suffix(" rpm"),
                 );
                 ui.separator();
-                ui.small("Throttle, idle leak, and lambda target are placeholders until intake and species models exist.");
+                ui.small("Throttle and idle throttle feed the intake plenum.");
             });
 
         egui::TopBottomPanel::top("summary")
             .resizable(false)
+            .exact_height(SUMMARY_PANEL_HEIGHT)
             .show(ctx, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    metric(
-                        ui,
-                        "RPM",
-                        format!("{:.0}", self.latest_frame.engine_data.rpm),
-                    );
-                    metric(
-                        ui,
-                        "RPM Delta",
-                        format!("{:.1}", self.latest_frame.engine_data.rpm_delta),
-                    );
-                    metric(
-                        ui,
-                        "Torque",
-                        format!("{:.2} Nm", self.latest_frame.engine_data.torque_nm),
-                    );
-                    metric(
-                        ui,
-                        "Power",
-                        format!("{:.2} kW", self.latest_frame.engine_data.power_kw),
-                    );
-                    metric(
-                        ui,
-                        "Fuel Flow",
-                        format!(
-                            "{:.1} mg/s",
-                            self.latest_frame.engine_data.fuel_flow_mg_per_s
-                        ),
-                    );
-                    metric(
-                        ui,
-                        "Air Flow",
-                        format!("{:.2} g/s", self.latest_frame.engine_data.air_flow_g_per_s),
-                    );
-                    scalar_metric(
-                        ui,
-                        "Chamber Lambda",
-                        self.latest_frame.engine_data.chamber_lambda,
-                    );
-                    scalar_metric(
-                        ui,
-                        "Exhaust Lambda",
-                        self.latest_frame.engine_data.exhaust_lambda,
-                    );
-                    metric(
-                        ui,
-                        "Peak Temp",
-                        format!(
-                            "{:.0} K",
-                            self.latest_frame.engine_data.peak_cylinder_temperature_k
-                        ),
-                    );
-                    metric(
-                        ui,
-                        "Peak Pressure",
-                        format!(
-                            "{:.0} kPa",
-                            self.latest_frame.engine_data.peak_cylinder_pressure_pa / 1000.0
-                        ),
-                    );
-                    metric(
-                        ui,
-                        "MAP",
-                        format!("{:.0} kPa", self.latest_frame.engine_data.map_pa / 1000.0),
-                    );
-                    metric(
-                        ui,
-                        "Combustion Ratio",
-                        format!(
-                            "{:.2}",
-                            self.latest_frame.engine_data.combustion_event_ratio
-                        ),
-                    );
-                });
+                egui::ScrollArea::horizontal()
+                    .id_salt("summary_scroll")
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            metric(
+                                ui,
+                                "RPM",
+                                format!("{:.0}", self.latest_frame.engine_data.rpm),
+                            );
+                            metric(
+                                ui,
+                                "RPM Delta",
+                                format!("{:.1}", self.latest_frame.engine_data.rpm_delta),
+                            );
+                            metric(
+                                ui,
+                                "Torque",
+                                format!("{:.2} Nm", self.latest_frame.engine_data.torque_nm),
+                            );
+                            metric(
+                                ui,
+                                "Power",
+                                format!("{:.2} kW", self.latest_frame.engine_data.power_kw),
+                            );
+                            metric(
+                                ui,
+                                "Fuel Flow",
+                                format!(
+                                    "{:.1} mg/s",
+                                    self.latest_frame.engine_data.fuel_flow_mg_per_s
+                                ),
+                            );
+                            metric(
+                                ui,
+                                "Air Flow",
+                                format!(
+                                    "{:.2} g/s",
+                                    self.latest_frame.engine_data.air_flow_g_per_s
+                                ),
+                            );
+                            metric(
+                                ui,
+                                "BMEP Est",
+                                format!("{:.0} kPa", self.latest_frame.engine_data.bmep_kpa),
+                            );
+                            metric(
+                                ui,
+                                "VE",
+                                format!(
+                                    "{:.0} %",
+                                    self.latest_frame.engine_data.volumetric_efficiency_percent
+                                ),
+                            );
+                            scalar_metric(
+                                ui,
+                                "Chamber Lambda",
+                                self.latest_frame.engine_data.chamber_lambda,
+                            );
+                            scalar_metric(
+                                ui,
+                                "Exhaust Lambda",
+                                self.latest_frame.engine_data.exhaust_lambda,
+                            );
+                            metric(
+                                ui,
+                                "Peak Temp",
+                                format!(
+                                    "{:.0} C",
+                                    kelvin_to_celsius(
+                                        self.latest_frame.engine_data.peak_cylinder_temperature_k
+                                    )
+                                ),
+                            );
+                            metric(
+                                ui,
+                                "Peak Pressure",
+                                format!(
+                                    "{:.0} kPa rel",
+                                    relative_kpa(
+                                        self.latest_frame.engine_data.peak_cylinder_pressure_pa,
+                                        self.latest_frame.engine_data.ambient_pressure_pa,
+                                    )
+                                ),
+                            );
+                            metric(
+                                ui,
+                                "MAP",
+                                format!("{:.0} kPa", self.latest_frame.engine_data.map_pa / 1000.0),
+                            );
+                            metric(
+                                ui,
+                                "Combustion Ratio",
+                                format!(
+                                    "{:.2}",
+                                    self.latest_frame.engine_data.combustion_event_ratio
+                                ),
+                            );
+                        });
+                    });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::Grid::new("main_grid")
-                .num_columns(2)
-                .spacing([12.0, 12.0])
-                .show(ui, |ui| {
-                    angle_plot(
-                        ui,
-                        "Cylinder Pressure",
-                        &self.latest_frame.angle_trace,
-                        |trace| &trace.pressure_pa,
-                        "Pa",
-                    );
-                    angle_plot(
-                        ui,
-                        "Cylinder Temperature",
-                        &self.latest_frame.angle_trace,
-                        |trace| &trace.temperature_k,
-                        "K",
-                    );
-                    ui.end_row();
-                    angle_plot(
-                        ui,
-                        "Valve Effective Area",
-                        &self.latest_frame.angle_trace,
-                        |trace| &trace.intake_effective_area_m2,
-                        "m^2",
-                    );
-                    angle_plot(
-                        ui,
-                        "Chamber Air Mass",
-                        &self.latest_frame.angle_trace,
-                        |trace| &trace.chamber_air_mass_g,
-                        "g",
-                    );
-                    ui.end_row();
-                    time_plot(
-                        ui,
-                        "RPM Over Time",
-                        &self.latest_frame.time_history,
-                        |point| [point.time_seconds, point.rpm],
-                    );
-                    time_plot(
-                        ui,
-                        "Torque Over Time",
-                        &self.latest_frame.time_history,
-                        |point| [point.time_seconds, point.torque_nm],
-                    );
-                    ui.end_row();
-                    time_plot(
-                        ui,
-                        "MAP Over Time",
-                        &self.latest_frame.time_history,
-                        |point| [point.time_seconds, point.map_pa / 1000.0],
-                    );
-                    rpm_history_plot(ui, "Torque/Power vs RPM", &self.latest_frame);
-                });
+            plot_dashboard(ui, &self.latest_frame);
         });
 
         ctx.request_repaint();
@@ -329,9 +333,13 @@ impl eframe::App for EngineGuiApp {
 }
 
 fn metric(ui: &mut egui::Ui, label: &str, value: String) {
-    ui.group(|ui| {
-        ui.label(RichText::new(label).small());
-        ui.label(RichText::new(value).strong());
+    ui.scope(|ui| {
+        ui.set_width(METRIC_CARD_WIDTH);
+        ui.group(|ui| {
+            ui.set_min_size(egui::vec2(METRIC_CARD_WIDTH - 16.0, METRIC_CARD_HEIGHT));
+            ui.label(RichText::new(label).small());
+            ui.label(RichText::new(value).strong());
+        });
     });
 }
 
@@ -343,33 +351,184 @@ fn scalar_metric(ui: &mut egui::Ui, label: &str, scalar: enginesim::telemetry::T
     };
     let text = scalar
         .value
-        .map(|value| format!("{value:.2}{suffix}"))
+        .map(|value| {
+            if value.is_infinite() {
+                format!("lean{suffix}")
+            } else {
+                format!("{value:.2}{suffix}")
+            }
+        })
         .unwrap_or_else(|| suffix.trim().to_string());
     metric(ui, label, text);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PlotPanel {
+    CylinderPressure,
+    CylinderTemperature,
+    ValveEffectiveArea,
+    ChamberMass,
+    RpmTime,
+    TorqueTime,
+    MapTime,
+    TorqueRpm,
+    PowerRpm,
+}
+
+const PLOT_PANELS: [PlotPanel; 9] = [
+    PlotPanel::CylinderPressure,
+    PlotPanel::CylinderTemperature,
+    PlotPanel::ValveEffectiveArea,
+    PlotPanel::ChamberMass,
+    PlotPanel::RpmTime,
+    PlotPanel::TorqueTime,
+    PlotPanel::MapTime,
+    PlotPanel::TorqueRpm,
+    PlotPanel::PowerRpm,
+];
+
+fn plot_dashboard(ui: &mut egui::Ui, telemetry: &EngineFrameTelemetry) {
+    let available_width = ui.available_width();
+    let column_count = if available_width >= MIN_THREE_COLUMN_WIDTH {
+        3
+    } else if available_width >= MIN_TWO_COLUMN_WIDTH {
+        2
+    } else {
+        1
+    };
+
+    egui::ScrollArea::vertical()
+        .id_salt("plot_dashboard_scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for row in PLOT_PANELS.chunks(column_count) {
+                ui.columns(column_count, |columns| {
+                    for (column_index, panel) in row.iter().enumerate() {
+                        render_plot_panel(&mut columns[column_index], *panel, telemetry);
+                    }
+                });
+                ui.add_space(PLOT_ROW_SPACING);
+            }
+        });
+}
+
+fn render_plot_panel(ui: &mut egui::Ui, panel: PlotPanel, telemetry: &EngineFrameTelemetry) {
+    match panel {
+        PlotPanel::CylinderPressure => angle_plot(
+            ui,
+            "Cylinder Pressure",
+            "Pressure (kPa rel)",
+            &[(
+                "Pressure",
+                &relative_pressure_points(
+                    &telemetry.angle_trace.pressure_pa,
+                    telemetry.engine_data.ambient_pressure_pa,
+                ),
+                Color32::LIGHT_RED,
+            )],
+        ),
+        PlotPanel::CylinderTemperature => angle_plot(
+            ui,
+            "Cylinder Temperature",
+            "Temperature (C)",
+            &[(
+                "Temperature",
+                &celsius_points(&telemetry.angle_trace.temperature_k),
+                Color32::LIGHT_RED,
+            )],
+        ),
+        PlotPanel::ValveEffectiveArea => angle_plot(
+            ui,
+            "Valve Effective Area",
+            "Effective Area (m^2)",
+            &[
+                (
+                    "Intake",
+                    &telemetry.angle_trace.intake_effective_area_m2,
+                    Color32::LIGHT_RED,
+                ),
+                (
+                    "Exhaust",
+                    &telemetry.angle_trace.exhaust_effective_area_m2,
+                    Color32::LIGHT_BLUE,
+                ),
+            ],
+        ),
+        PlotPanel::ChamberMass => angle_plot(
+            ui,
+            "Charge Air vs Fuel x AFR",
+            "Mass (g)",
+            &[
+                (
+                    "Air mass",
+                    &telemetry.angle_trace.chamber_air_mass_g,
+                    Color32::LIGHT_RED,
+                ),
+                (
+                    "Fuel x AFR",
+                    &telemetry.angle_trace.chamber_fuel_scaled_g,
+                    Color32::LIGHT_YELLOW,
+                ),
+            ],
+        ),
+        PlotPanel::RpmTime => time_plot(
+            ui,
+            "RPM Over Time",
+            "RPM",
+            &telemetry.time_history,
+            |point| [point.time_seconds, point.rpm],
+        ),
+        PlotPanel::TorqueTime => time_plot(
+            ui,
+            "Torque Over Time",
+            "Torque (Nm)",
+            &telemetry.time_history,
+            |point| [point.time_seconds, point.torque_nm],
+        ),
+        PlotPanel::MapTime => time_plot(
+            ui,
+            "MAP Over Time",
+            "MAP (kPa)",
+            &telemetry.time_history,
+            |point| [point.time_seconds, point.map_pa / 1000.0],
+        ),
+        PlotPanel::TorqueRpm => rpm_history_plot(
+            ui,
+            "Cycle Mean Torque vs RPM",
+            "Torque (Nm)",
+            telemetry,
+            |point| point.torque_nm,
+            Color32::from_rgb(100, 200, 255),
+        ),
+        PlotPanel::PowerRpm => rpm_history_plot(
+            ui,
+            "Cycle Mean Power vs RPM",
+            "Power (kW)",
+            telemetry,
+            |point| point.power_kw,
+            Color32::from_rgb(255, 180, 80),
+        ),
+    }
 }
 
 fn angle_plot(
     ui: &mut egui::Ui,
     title: &str,
-    trace: &AngleTraceSnapshot,
-    select: impl Fn(&AngleTraceSnapshot) -> &Vec<[f64; 2]>,
     y_label: &str,
+    series: &[(&str, &Vec<[f64; 2]>, Color32)],
 ) {
-    let points = PlotPoints::from(select(trace).clone());
-    Plot::new(title)
-        .view_aspect(1.8)
-        .height(220.0)
+    plot_title(ui, title);
+    Plot::new(format!("{title}_plot"))
+        .height(plot_height(ui.available_width()))
         .x_axis_label("Crank Angle (deg)")
         .y_axis_label(y_label)
+        .default_x_bounds(0.0, 720.0)
+        .allow_drag(false)
+        .allow_zoom(false)
         .show(ui, |plot_ui| {
-            plot_ui.line(Line::new(title, points));
-            if title == "Valve Effective Area" {
-                let exhaust = PlotPoints::from(trace.exhaust_effective_area_m2.clone());
-                plot_ui.line(Line::new("Exhaust", exhaust).color(Color32::LIGHT_RED));
-            }
-            if title == "Chamber Air Mass" {
-                let fuel = PlotPoints::from(trace.fuel_mass_placeholder_mg.clone());
-                plot_ui.line(Line::new("Fuel placeholder", fuel).color(Color32::LIGHT_YELLOW));
+            plot_ui.set_plot_bounds_x(0.0..=720.0);
+            for (label, points, color) in series {
+                plot_ui.line(Line::new(*label, PlotPoints::from((*points).clone())).color(*color));
             }
         });
 }
@@ -377,39 +536,77 @@ fn angle_plot(
 fn time_plot(
     ui: &mut egui::Ui,
     title: &str,
+    y_label: &str,
     history: &[enginesim::telemetry::TimePlotPoint],
     map: impl Fn(&enginesim::telemetry::TimePlotPoint) -> [f64; 2],
 ) {
+    plot_title(ui, title);
     let points: Vec<[f64; 2]> = history.iter().map(map).collect();
-    Plot::new(title)
-        .view_aspect(1.8)
-        .height(220.0)
+    Plot::new(format!("{title}_plot"))
+        .height(plot_height(ui.available_width()))
+        .x_axis_label("Time (s)")
+        .y_axis_label(y_label)
+        .include_y(0.0)
         .show(ui, |plot_ui| {
             plot_ui.line(Line::new(title, PlotPoints::from(points)));
         });
 }
 
-fn rpm_history_plot(ui: &mut egui::Ui, title: &str, telemetry: &EngineFrameTelemetry) {
-    Plot::new(title)
-        .view_aspect(1.8)
-        .height(220.0)
+fn rpm_history_plot(
+    ui: &mut egui::Ui,
+    title: &str,
+    y_label: &str,
+    telemetry: &EngineFrameTelemetry,
+    map: impl Fn(&enginesim::telemetry::RpmPlotPoint) -> f64,
+    color: Color32,
+) {
+    plot_title(ui, title);
+    let points: Vec<[f64; 2]> = telemetry
+        .rpm_history
+        .iter()
+        .map(|point| [point.rpm, map(point)])
+        .collect();
+    Plot::new(format!("{title}_plot"))
+        .height(plot_height(ui.available_width()))
         .x_axis_label("RPM")
+        .y_axis_label(y_label)
+        .include_y(0.0)
         .show(ui, |plot_ui| {
-            for point in &telemetry.rpm_history {
-                let fade = (255_i32 - (point.age_index as i32 * 18)).clamp(48, 255) as u8;
-                plot_ui.points(
-                    Points::new(
-                        "Torque",
-                        PlotPoints::from(vec![[point.rpm, point.torque_nm]]),
-                    )
-                    .radius(3.0)
-                    .color(Color32::from_rgba_unmultiplied(100, 200, 255, fade)),
-                );
-                plot_ui.points(
-                    Points::new("Power", PlotPoints::from(vec![[point.rpm, point.power_kw]]))
-                        .radius(3.0)
-                        .color(Color32::from_rgba_unmultiplied(255, 180, 80, fade)),
-                );
-            }
+            plot_ui.line(Line::new(title, PlotPoints::from(points.clone())).color(color));
+            plot_ui.points(
+                Points::new(title, PlotPoints::from(points))
+                    .radius(2.5)
+                    .color(color),
+            );
         });
+}
+
+fn plot_title(ui: &mut egui::Ui, title: &str) {
+    ui.label(RichText::new(title).strong());
+}
+
+fn plot_height(available_width: f32) -> f32 {
+    (available_width / 2.35).clamp(185.0, 310.0)
+}
+
+fn relative_kpa(pressure_pa: f64, ambient_pressure_pa: f64) -> f64 {
+    (pressure_pa - ambient_pressure_pa) / 1000.0
+}
+
+fn kelvin_to_celsius(temperature_k: f64) -> f64 {
+    temperature_k - 273.15
+}
+
+fn relative_pressure_points(points: &[[f64; 2]], ambient_pressure_pa: f64) -> Vec<[f64; 2]> {
+    points
+        .iter()
+        .map(|point| [point[0], relative_kpa(point[1], ambient_pressure_pa)])
+        .collect()
+}
+
+fn celsius_points(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    points
+        .iter()
+        .map(|point| [point[0], kelvin_to_celsius(point[1])])
+        .collect()
 }

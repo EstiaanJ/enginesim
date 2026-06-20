@@ -5,7 +5,8 @@ use common::{
     fixed_volume_boundary,
 };
 use enginesim::chamber::{
-    ChamberBoundary, FlowBoundary, chamber_derivatives, chamber_pressure_pa, step_euler,
+    ChamberBoundary, ChamberRk4StageInputs, FlowBoundary, chamber_derivatives, chamber_pressure_pa,
+    step_euler, step_rk4, step_rk4_with_stage_inputs,
 };
 use enginesim::gas::{cp, cv};
 
@@ -146,4 +147,44 @@ fn open_chamber_blowdown_removes_mass() {
 
     assert!(derivatives.outlet_mass_rate_kg_per_s > 0.0);
     assert!(derivatives.mass_rate_kg_per_s < 0.0);
+}
+
+#[test]
+fn rk4_stage_inputs_evaluate_moving_boundary_at_substeps() {
+    let properties = air_properties();
+    let state = chamber_state_at_air_pressure(100_000.0, 300.0, 0.001);
+    let timestep_seconds = 0.01;
+    let volume_rate_m3_per_s = 0.0001;
+    let fixed_boundary = ChamberBoundary {
+        volume_m3: 0.001,
+        volume_rate_m3_per_s,
+        heat_rate_w: 0.0,
+    };
+    let moving_boundary = |elapsed_seconds: f64| ChamberBoundary {
+        volume_m3: fixed_boundary.volume_m3 + volume_rate_m3_per_s * elapsed_seconds,
+        volume_rate_m3_per_s,
+        heat_rate_w: 0.0,
+    };
+
+    let fixed = step_rk4(
+        state,
+        fixed_boundary,
+        closed_flow(),
+        closed_flow(),
+        properties,
+        timestep_seconds,
+    );
+    let moving = step_rk4_with_stage_inputs(
+        state,
+        |stage| ChamberRk4StageInputs {
+            boundary: moving_boundary(stage.elapsed_seconds),
+            inlet: closed_flow(),
+            outlet: closed_flow(),
+        },
+        properties,
+        timestep_seconds,
+    );
+
+    assert!(moving.temperature_k > fixed.temperature_k);
+    assert_approx_eq(moving.mass_kg, state.mass_kg, EPSILON);
 }

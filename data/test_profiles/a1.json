@@ -1,0 +1,21 @@
+{
+  "profile": "real_time",
+  "grid": {
+    "throttle": { "count": 4, "min": 0.0, "max": 1.0, "spacing": "log" },
+    "rpm": { "count": 20, "min": 100.0, "max": 7000.0, "spacing": "linear" },
+    "lambda": { "count": 7, "min": 0.1, "max": 4, "spacing": "linear" },
+    "dwell_seconds": 2.4,
+    "settle_fraction": 0.5
+  },
+  "sweep": {
+    "runs": 5,
+    "duration_seconds": 5,
+    "throttle_points": 5,
+    "lambda_points": 3,
+    "rpm_min": 500.0,
+    "rpm_max": 7000.0,
+    "lambda_min": 0.8,
+    "lambda_max": 1.4,
+    "rpm_bin": 100.0
+  }
+}

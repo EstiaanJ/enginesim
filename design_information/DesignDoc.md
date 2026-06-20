@@ -57,29 +57,29 @@ The first target is a complete single-cylinder 0D engine loop:
 
 This vertical slice should be physically coherent before adding multi-cylinder behavior or full 1D intake/exhaust pipes.
 
-### Current Phase 2 Implementation
+### Current Single-Cylinder Implementation
 
-The current Phase 2 runner is `SingleCylinderEngine` in `src/single_cylinder.rs`. It combines:
+The current single-cylinder runner is `SingleCylinderEngine` in `src/single_cylinder.rs`. It combines:
 
-- a 0D chamber state with total gas mass and temperature,
+- a species-aware 0D chamber state with oxygen, fuel, inert gas and products,
 - slider-crank volume, `dV/dtheta`, `dV/dt` and `dx/dtheta`,
-- prescribed intake and exhaust pressure/temperature boundaries,
+- a finite-volume intake plenum, intake runner and exhaust runner,
+- throttle flow into the plenum and bidirectional valve/pipe coupling between the chamber and the runners,
 - intake and exhaust valve events with smooth lift-to-effective-area curves,
-- bidirectional mass flow through each valve,
-- a fixed-delay Wiebe heat-release event,
+- Wiebe heat release with ignition delay, lambda-aware fueling and mixture-limit misfire behavior,
 - profile-driven timesteps for direct stepping and fixed-speed sweeps,
 - indicated gas force, indicated torque, accumulated work, mean indicated torque and RPM outputs,
 - fixed-RPM sweep helpers that output plot-ready torque and indicated power values.
 
-The current runner is intentionally indicated-only. It does not yet compute brake torque, friction, pumping-loss models beyond the actual chamber pumping work, throttle/plenum/runner dynamics, wall heat transfer, or species-specific chamber composition. Those are later roadmap phases.
+The current runner is still indicated-only. It does not yet compute brake torque or a friction model, but it now includes the intake/exhaust dynamics, manifold pressure and species composition needed for the later loss and calibration phases.
 
-The chamber update currently uses the existing explicit chamber step. This keeps the integration path simple and deterministic while Phase 2 proves coupling signs, event timing and data flow. Render-mode work should later add smaller timesteps, substepping or higher-order integration where convergence tests show a need.
+The chamber update remains explicit and deterministic. Render-mode work can still add smaller timesteps, substepping or higher-order integration where convergence tests show a need.
 
 ## Engine Definition Data
 
 Engine definitions are JSON files loaded through serde-backed structs in `src/engine_config.rs`. JSON values should use SI units. Crank-angle fields are accepted in degrees for readability at the data-file boundary and converted to radians internally.
 
-The first fixture is `data/engines/gn250.json`, based on the provided GN250 spec notes. Bore, stroke, compression ratio, connecting rod length, valve diameters/counts, advertised valve timing and the simple spark-advance schedule come from supplied GN250 notes. Effective flow areas, crank inertia and the simple combustion energy settings remain approximations until measured or sourced values are added.
+The first fixture is `data/engines/gn250.json`, based on the provided GN250 spec notes. Bore, stroke, compression ratio, connecting rod length, valve diameters/counts, advertised valve timing and the simple spark-advance schedule come from supplied GN250 notes. The JSON also carries conservative intake plenum, runner and exhaust runner geometry so the 1D path is data-driven. Effective flow areas and combustion energy settings remain approximations until measured or sourced values are added.
 
 The current crank-angle convention is:
 
@@ -93,18 +93,18 @@ Spark timing in the JSON fixture is therefore near the end of the compression st
 
 The GN250 fixture uses these current conversions:
 
-- Spark advance: `10 deg BTDC` below `1700 rpm` maps to `710 deg`; `35 deg BTDC` at and above `3000 rpm` maps to `685 deg`. The Phase 2 runner linearly interpolates between those RPM points.
+- Spark advance: `10 deg BTDC` below `1700 rpm` maps to `710 deg`; `35 deg BTDC` at and above `3000 rpm` maps to `685 deg`. The single-cylinder runner linearly interpolates between those RPM points.
 - Intake opens `12 deg BTDC` before overlap TDC, so it maps to `348 deg`.
 - Intake closes `42 deg ABDC` after intake BDC, so it maps to `582 deg`.
 - Exhaust opens `45 deg BBDC` before expansion BDC, so it maps to `135 deg`.
 - Exhaust closes `10 deg ATDC` after overlap TDC, so it maps to `370 deg`.
-- Lambda target is fixed at `1.0` for now. Phase 2 records the value but does not yet use species-aware fueling.
+- Lambda target is `1.0` in the GN250 fixture and is now used by the single-cylinder fueling logic. The value remains a calibration assumption, not a validated GN250 measurement.
 - The real GN250 four-valve head is collapsed to one aggregate intake boundary and one aggregate exhaust boundary. The fixture records `2 x 26 mm` intake valves and `2 x 22 mm` exhaust valves, but the current flow model still uses an aggregate effective area.
 - The current crank inertia value uses the crank plus rotor/alternator estimate range. Clutch-reflected inertia should be a load/driveline concern, not baked into the base crank value by default.
 
 ## 0D Chamber State
 
-The chamber state should be based on conserved quantities:
+The chamber state is based on conserved quantities:
 
 - Oxygen mass.
 - Fuel mass.
@@ -113,7 +113,7 @@ The chamber state should be based on conserved quantities:
 - Total internal energy.
 - Current chamber volume.
 
-Pressure and temperature should be derived from conserved state and mixture properties. Early models may use approximate mixture properties, but the approximation must be explicit.
+Pressure and temperature are derived from conserved state and mixture properties. Early models may use approximate mixture properties, but the approximation must be explicit.
 
 ## Combustion And Wiebe Burn Model
 
@@ -176,9 +176,7 @@ Combustion heat release must be integrated using the delta in cumulative burned 
 
 ## 1D Intake And Exhaust
 
-The eventual intake and exhaust model should use finite-volume compressible flow. Pipe cells should track the state needed for pressure waves, flow reversal and acoustic output. The 0D chamber should couple to the 1D model through valve boundary fluxes that conserve mass, species and energy.
-
-Until full 1D pipes exist, prescribed pressure/temperature boundaries are acceptable for the first vertical slice.
+The intake and exhaust model uses finite-volume compressible flow. Pipe cells track the state needed for pressure waves, flow reversal and acoustic output. The 0D chamber couples to the 1D model through valve boundary fluxes that conserve mass, species and energy.
 
 ## Crank And Mechanical Model
 
@@ -206,18 +204,18 @@ The GUI should be implemented as a thin application layer over the library crate
 
 ### Current GUI Vertical Slice
 
-The current GUI implementation is `src/bin/engine_gui.rs`, backed by `src/telemetry.rs`. It loads `data/engines/gn250.json` by default, steps the existing `SingleCylinderEngine`, and only renders telemetry snapshots rather than reading raw engine state directly from egui.
+The current GUI implementation is `src/bin/engine_gui.rs`, backed by `src/telemetry.rs`. It loads `data/engines/gn250.json` by default, steps `SingleCylinderEngine`, and renders telemetry snapshots rather than reading raw engine state directly from egui.
 
-The current GUI wiring intentionally stays within Phase 2 physics:
+The current GUI wiring uses the implemented physics stack:
 
 - Starter torque, starter speed limit, added inertia, added torque load, spark enable, fuel enable and dyno fixed-RPM mode are mapped into single-cylinder step inputs.
 - Dyno mode currently uses the existing fixed-crank-speed path and is therefore an explicitly unrealistic forced-rotation diagnostic mode.
-- Throttle position, idle leak and lambda target are exposed in the controls panel, but they remain placeholders until intake restriction, plenum state and species-aware fueling exist.
-- Chamber lambda is currently displayed as the lambda target placeholder.
-- Exhaust lambda is currently unavailable.
-- MAP currently displays the prescribed intake boundary pressure until a real manifold or plenum state exists.
-- Fuel flow is currently estimated from configured fuel mass per cycle and engine speed.
-- Air flow is currently estimated from integrated intake mass flow.
+- Throttle position, idle throttle and lambda target feed the intake plenum and fueling controls.
+- Chamber lambda is displayed from the species-aware chamber state when available, otherwise it falls back to the documented placeholder.
+- Exhaust lambda is derived from the current exhaust runner composition using the conserved oxygen and fuel species buckets. It is still a direct runner-composition value rather than a delayed wideband sensor model.
+- MAP is taken from the intake plenum pressure.
+- Fuel flow is estimated from the configured lambda target and the engine’s per-cycle fueling assumption.
+- Air flow is estimated from integrated intake mass flow.
 
 This is a development dashboard, not a calibrated operator interface. Its purpose is to make timing, coupling, pressure, temperature, torque and control interactions visible while the physics stack is still incomplete.
 
@@ -257,7 +255,7 @@ The engine data panel should update at `15 Hz` and should use rolling display-fr
 - MAP.
 - Combustion event ratio.
 
-Some requested values are not physically available in the current Phase 2 model. Until Phase 3 species-aware chamber state and later exhaust composition exist, GUI values for chamber lambda, exhaust lambda, fuel mass in the chamber and exhaust oxygen/fuel should be marked as placeholders or unavailable rather than presented as validated physics. Fuel flow may be estimated from configured fuel mass per combustion event, air flow may be accumulated from intake mass flow, and MAP may use the prescribed intake boundary pressure until a manifold/plenum model exists.
+Some requested values are still approximations or placeholders. Chamber lambda now comes from the species-aware chamber state when available; exhaust lambda is still unavailable; fuel mass in the chamber is now a true species value; fuel flow may still be inferred from the lambda target and configured per-cycle fuel assumption; air flow may be accumulated from intake mass flow; and MAP now comes from intake plenum pressure.
 
 ### Engine-Angle Plots
 
@@ -301,7 +299,7 @@ Required controls:
 
 - Throttle position.
 - Idle leak amount.
-- Combined throttle command derived from throttle position and idle leak amount.
+- Parallel throttle area derived from the main throttle and idle throttle fractions.
 - Lambda target.
 - Starter motor torque.
 - Starter motor RPM limit, with behavior that allows the engine to overrun the starter.

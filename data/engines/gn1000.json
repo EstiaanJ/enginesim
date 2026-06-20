@@ -1,8 +1,8 @@
 {
   "metadata": {
-    "name": "Suzuki GN250 approximation",
+    "name": "Suzuki GN1000 (fictional engine based on GN250)",
     "manufacturer": "Suzuki",
-    "notes": "Based on data/engines/250cc.md plus supplied GN250 calibration notes. Valve timing is converted to the local 720-degree convention. This modified EFI GN250 is represented as an SOHC four-valve head with two intake and two exhaust valves. The current model aggregates the single throttle-to-head intake path and the two-valve split into one intake boundary. The two exhaust primaries, approximately 1.4 m and 1.5 m, plus a 0.5 m combined straight pipe are approximated as one equivalent straight aggregate runner with the combined runner area. The injector is assumed to sit behind the throttle and before the head port, while the current 0D fueling model still supplies vapor to the chamber at the combustion event."
+    "notes": "Inline 4 Based on GN250 engine, simulated in another simulator"
   },
   "geometry": {
     "bore_m": 0.072,
@@ -22,21 +22,6 @@
     "exhaust_pressure_pa": 101325.0,
     "exhaust_temperature_k": 700.0,
     "crankcase_pressure_pa": 101325.0
-  },
-  "intake_exhaust": {
-    "intake_plenum_volume_m3": 0.0010,
-    "throttle_maximum_area_m2": 0.0005,
-    "idle_throttle_maximum_area_m2": 0.00003,
-    "intake_runner": {
-      "number_of_cells": 8,
-      "total_length_m": 0.04,
-      "area_m2": 0.0018
-    },
-    "exhaust_runner": {
-      "number_of_cells": 26,
-      "total_length_m": 1.95,
-      "area_m2": 0.000745
-    }
   },
   "valves": {
     "intake": {
@@ -58,7 +43,7 @@
   },
   "crank": {
     "moment_of_inertia_kg_m2": 0.014,
-    "initial_speed_rpm": 1900.0,
+    "initial_speed_rpm": 3000.0,
     "initial_crank_angle_deg": 0.0
   },
   "combustion": {
@@ -74,7 +59,7 @@
       "high_speed_rpm": 3000.0,
       "high_speed_advance_deg_btdc": 35.0
     },
-    "ignition_delay_deg": 4.0,
+    "ignition_delay_deg": 8.0,
     "wiebe": {
       "combustion_duration_rad": 0.6981317007977318,
       "efficiency_coefficient": 5.0,

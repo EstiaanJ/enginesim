@@ -1,0 +1,6 @@
+{
+  "timestep_seconds": 0.00005,
+  "redline_cut_time_seconds": 0.18,
+  "max_added_inertia_kg_m2": 0.15,
+  "set_points_rpm": [1500.0, 3000.0, 6000.0]
+}

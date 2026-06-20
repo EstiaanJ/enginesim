@@ -196,6 +196,25 @@ pub fn force_from_rotational_torque(torque_nm: f64, meters_per_radian: f64) -> f
     torque_nm / meters_per_radian
 }
 
+pub fn explicit_spring_stability_timestep_seconds(inertia: f64, stiffness: f64) -> f64 {
+    assert!(inertia > 0.0, "inertia must be positive");
+    assert!(stiffness >= 0.0, "stiffness must be non-negative");
+    if stiffness == 0.0 {
+        return f64::INFINITY;
+    }
+
+    0.25 * 2.0 / (stiffness / inertia).sqrt()
+}
+
+pub fn explicit_spring_timestep_is_stable(
+    timestep_seconds: f64,
+    inertia: f64,
+    stiffness: f64,
+) -> bool {
+    assert!(timestep_seconds >= 0.0, "timestep must be non-negative");
+    timestep_seconds <= explicit_spring_stability_timestep_seconds(inertia, stiffness)
+}
+
 pub fn enforce_linear_kinematic_state(
     state: &mut LinearMassState,
     position_m: f64,
@@ -406,6 +425,10 @@ pub fn step_mechanical_system(
         .iter()
         .map(|body| body.external_torque_nm)
         .collect::<Vec<_>>();
+    let mut effective_parent_inertia_kg_m2 = independent_rotational_bodies
+        .iter()
+        .map(|body| body.state.moment_of_inertia_kg_m2)
+        .collect::<Vec<_>>();
 
     for body in dependent_linear_bodies.iter_mut() {
         enforce_linear_kinematic_state(
@@ -415,12 +438,28 @@ pub fn step_mechanical_system(
             body.kinematics.acceleration_m_per_s2,
         );
 
-        let inertial_reaction_force_n = -body.state.mass_kg * body.kinematics.acceleration_m_per_s2;
-        let force_transmitted_to_parent_n = body.external_force_n + inertial_reaction_force_n;
-        independent_rotational_torques_nm[body.parent_rotational_index] += torque_from_linear_force(
-            force_transmitted_to_parent_n,
-            body.kinematics.dx_dtheta_m_per_rad,
-        );
+        independent_rotational_torques_nm[body.parent_rotational_index] +=
+            torque_from_linear_force(body.external_force_n, body.kinematics.dx_dtheta_m_per_rad);
+        effective_parent_inertia_kg_m2[body.parent_rotational_index] +=
+            body.state.mass_kg * body.kinematics.dx_dtheta_m_per_rad.powi(2);
+    }
+
+    for body in dependent_rotational_bodies.iter() {
+        independent_rotational_torques_nm[body.parent_rotational_index] +=
+            body.external_torque_nm * body.driven_per_parent_ratio;
+        effective_parent_inertia_kg_m2[body.parent_rotational_index] +=
+            body.state.moment_of_inertia_kg_m2 * body.driven_per_parent_ratio.powi(2);
+    }
+
+    for ((body, torque_nm), effective_inertia_kg_m2) in independent_rotational_bodies
+        .iter_mut()
+        .zip(independent_rotational_torques_nm.iter())
+        .zip(effective_parent_inertia_kg_m2.iter())
+    {
+        let body_inertia_kg_m2 = body.state.moment_of_inertia_kg_m2;
+        body.state.moment_of_inertia_kg_m2 = *effective_inertia_kg_m2;
+        update_rotational_mass(&mut body.state, body.config, timestep_seconds, *torque_nm);
+        body.state.moment_of_inertia_kg_m2 = body_inertia_kg_m2;
     }
 
     for body in dependent_rotational_bodies.iter_mut() {
@@ -437,20 +476,6 @@ pub fn step_mechanical_system(
             parent.angular_acceleration_rad_per_s2 * body.driven_per_parent_ratio;
         body.state.angular_displacement_rad =
             angular_displacement_rad(previous_angle_rad, body.state.angle_rad, body.config);
-
-        let inertial_reaction_torque_nm =
-            -body.state.moment_of_inertia_kg_m2 * body.state.angular_acceleration_rad_per_s2;
-        let torque_transmitted_to_parent_nm =
-            (body.external_torque_nm + inertial_reaction_torque_nm) * body.driven_per_parent_ratio;
-        independent_rotational_torques_nm[body.parent_rotational_index] +=
-            torque_transmitted_to_parent_nm;
-    }
-
-    for (body, torque_nm) in independent_rotational_bodies
-        .iter_mut()
-        .zip(independent_rotational_torques_nm.iter())
-    {
-        update_rotational_mass(&mut body.state, body.config, timestep_seconds, *torque_nm);
     }
 
     MechanicalSystemStep {
@@ -600,6 +625,25 @@ mod tests {
     fn converts_between_linear_force_and_rotational_torque() {
         assert_approx_eq(torque_from_linear_force(100.0, 0.25), 25.0);
         assert_approx_eq(force_from_rotational_torque(25.0, 0.25), 100.0);
+    }
+
+    #[test]
+    fn explicit_spring_timestep_helper_flags_stiff_links() {
+        let soft_limit = explicit_spring_stability_timestep_seconds(1.0, 100.0);
+        let stiff_limit = explicit_spring_stability_timestep_seconds(1.0, 10_000.0);
+
+        assert!(stiff_limit < soft_limit);
+        assert!(explicit_spring_timestep_is_stable(
+            stiff_limit,
+            1.0,
+            10_000.0
+        ));
+        assert!(!explicit_spring_timestep_is_stable(
+            stiff_limit * 1.1,
+            1.0,
+            10_000.0
+        ));
+        assert!(explicit_spring_stability_timestep_seconds(1.0, 0.0).is_infinite());
     }
 
     #[test]
@@ -783,23 +827,72 @@ mod tests {
             0.5,
         );
 
-        assert_approx_eq(update.independent_rotational_torques_nm[0], 7.96);
+        let expected_acceleration = 8.0 / (2.0 + 1.0 * 0.01_f64.powi(2) + 1.0 * 0.5_f64.powi(2));
+
+        assert_approx_eq(update.independent_rotational_torques_nm[0], 8.0);
         assert_approx_eq(
             update.independent_rotational_bodies[0].state.angle_rad,
-            0.4975,
+            0.5 * expected_acceleration * 0.5_f64.powi(2),
         );
         assert_approx_eq(
             update.independent_rotational_bodies[0]
                 .state
                 .angular_velocity_rad_per_s,
-            1.99,
+            expected_acceleration * 0.5,
         );
         assert_approx_eq(update.dependent_linear_bodies[0].state.position_m, 0.02);
         assert_approx_eq(
             update.dependent_linear_bodies[0].state.velocity_m_per_s,
             3.0,
         );
-        assert_approx_eq(update.dependent_rotational_bodies[0].state.angle_rad, 0.0);
+        assert_approx_eq(
+            update.dependent_rotational_bodies[0].state.angle_rad,
+            0.25 * expected_acceleration * 0.5_f64.powi(2),
+        );
+        assert_approx_eq(
+            update.dependent_rotational_bodies[0]
+                .state
+                .angular_acceleration_rad_per_s2,
+            expected_acceleration * 0.5,
+        );
+    }
+
+    #[test]
+    fn mechanical_system_uses_current_effective_inertia_not_stale_dependent_acceleration() {
+        let config = RotationalMassConfig {
+            max_angle_rad: std::f64::consts::TAU,
+            wrap_angle: true,
+        };
+        let mut independent_bodies = [IndependentRotationalBody {
+            state: RotationalMassState::new(1.0, 0.0, 0.0, config),
+            config,
+            external_torque_nm: 0.0,
+        }];
+        independent_bodies[0].state.angular_acceleration_rad_per_s2 = 1000.0;
+        let mut dependent_linear_bodies = [];
+        let mut dependent_rotational_bodies = [DependentRotationalBody {
+            state: RotationalMassState::new(2.0, 0.0, 0.0, config),
+            config,
+            parent_rotational_index: 0,
+            external_torque_nm: 0.0,
+            driven_per_parent_ratio: 0.5,
+            phase_offset_rad: 0.0,
+        }];
+
+        let update = step_mechanical_system(
+            &mut independent_bodies,
+            &mut dependent_linear_bodies,
+            &mut dependent_rotational_bodies,
+            1.0,
+        );
+
+        assert_approx_eq(update.independent_rotational_torques_nm[0], 0.0);
+        assert_approx_eq(
+            update.independent_rotational_bodies[0]
+                .state
+                .angular_acceleration_rad_per_s2,
+            0.0,
+        );
         assert_approx_eq(
             update.dependent_rotational_bodies[0]
                 .state
@@ -839,13 +932,18 @@ mod tests {
             1.0,
         );
 
-        assert_approx_eq(update.independent_rotational_torques_nm[0], 8.0);
-        assert_approx_eq(update.independent_rotational_bodies[0].state.angle_rad, 4.0);
+        let expected_acceleration = 10.0 / (1.0 + 2.0 * 0.01_f64.powi(2));
+
+        assert_approx_eq(update.independent_rotational_torques_nm[0], 10.0);
+        assert_approx_eq(
+            update.independent_rotational_bodies[0].state.angle_rad,
+            0.5 * expected_acceleration,
+        );
         assert_approx_eq(
             update.independent_rotational_bodies[0]
                 .state
                 .angular_velocity_rad_per_s,
-            8.0,
+            expected_acceleration,
         );
     }
 
@@ -889,9 +987,15 @@ mod tests {
             update.dependent_rotational_bodies[0]
                 .state
                 .angular_acceleration_rad_per_s2,
-            3.0,
+            8.0 / (1.0 + 2.0 * 0.5_f64.powi(2)) * 0.5,
         );
-        assert_approx_eq(update.independent_rotational_torques_nm[0], 5.0);
+        assert_approx_eq(update.independent_rotational_torques_nm[0], 8.0);
+        assert_approx_eq(
+            update.independent_rotational_bodies[0]
+                .state
+                .angular_acceleration_rad_per_s2,
+            8.0 / (1.0 + 2.0 * 0.5_f64.powi(2)),
+        );
     }
 
     #[test]

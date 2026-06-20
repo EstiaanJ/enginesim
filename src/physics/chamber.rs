@@ -1,10 +1,127 @@
 use crate::flow::isentropic_mass_flow;
 use crate::gas::{cp, cv, pressure, temperature_from_internal_energy_k};
 
+pub const DRY_AIR_OXYGEN_MASS_FRACTION: f64 = 0.232;
+pub const DRY_AIR_INERT_MASS_FRACTION: f64 = 1.0 - DRY_AIR_OXYGEN_MASS_FRACTION;
+
+const OXYGEN_GAS_CONSTANT_J_PER_KG_K: f64 = 259.84;
+const OXYGEN_CV_J_PER_KG_K: f64 = 659.0;
+const INERT_GAS_CONSTANT_J_PER_KG_K: f64 = 296.8;
+const INERT_CV_J_PER_KG_K: f64 = 743.0;
+const PRODUCTS_GAS_CONSTANT_J_PER_KG_K: f64 = 240.0;
+const PRODUCTS_CV_J_PER_KG_K: f64 = 820.0;
+const FUEL_VAPOR_GAS_CONSTANT_J_PER_KG_K: f64 = 72.0;
+const FUEL_VAPOR_CV_J_PER_KG_K: f64 = 1700.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChamberState {
     pub mass_kg: f64,
     pub temperature_k: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ChamberSpeciesMasses {
+    pub oxygen_kg: f64,
+    pub fuel_kg: f64,
+    pub inert_kg: f64,
+    pub products_kg: f64,
+}
+
+impl ChamberSpeciesMasses {
+    pub fn from_dry_air_mass(air_mass_kg: f64) -> Self {
+        let air_mass_kg = air_mass_kg.max(0.0);
+        Self {
+            oxygen_kg: air_mass_kg * DRY_AIR_OXYGEN_MASS_FRACTION,
+            fuel_kg: 0.0,
+            inert_kg: air_mass_kg * DRY_AIR_INERT_MASS_FRACTION,
+            products_kg: 0.0,
+        }
+    }
+
+    pub fn total_mass_kg(self) -> f64 {
+        self.oxygen_kg.max(0.0)
+            + self.fuel_kg.max(0.0)
+            + self.inert_kg.max(0.0)
+            + self.products_kg.max(0.0)
+    }
+
+    pub fn air_mass_kg(self) -> f64 {
+        self.oxygen_kg.max(0.0) + self.inert_kg.max(0.0)
+    }
+
+    /// Pre-combustion ("charge") air and fuel masses in kg, reconstructed by
+    /// splitting `products` back into the fuel and oxygen that formed them.
+    ///
+    /// Combustion drains `fuel` and `oxygen` into `products` while leaving
+    /// `inert` untouched, so the raw `air_mass_kg() / fuel_kg` ratio of a
+    /// partially or fully burned charge no longer reflects the mixture that
+    /// ignited. Because products are formed from fuel + oxygen in
+    /// stoichiometric proportion (see `burn_species`), undoing that split
+    /// recovers the original air/fuel split and makes the result invariant
+    /// through combustion — what a wideband O2 sensor effectively measures.
+    ///
+    /// Returns `(air_kg, fuel_kg)`.
+    pub fn charge_air_and_fuel_kg(self, stoichiometric_air_fuel_ratio: f64) -> (f64, f64) {
+        let species = self.normalized();
+        let oxygen_fuel_ratio =
+            stoichiometric_air_fuel_ratio.max(0.0) * DRY_AIR_OXYGEN_MASS_FRACTION;
+        let fuel_in_products = species.products_kg / (1.0 + oxygen_fuel_ratio);
+        let oxygen_in_products = species.products_kg - fuel_in_products;
+
+        let air_kg = species.oxygen_kg + oxygen_in_products + species.inert_kg;
+        let fuel_kg = species.fuel_kg + fuel_in_products;
+        (air_kg, fuel_kg)
+    }
+
+    pub fn lambda(self, stoichiometric_air_fuel_ratio: f64) -> Option<f64> {
+        if stoichiometric_air_fuel_ratio <= 0.0 {
+            return None;
+        }
+
+        let (air_kg, fuel_kg) = self.charge_air_and_fuel_kg(stoichiometric_air_fuel_ratio);
+        if fuel_kg <= 0.0 {
+            // No fuel has ever been present in this gas: there is no air/fuel
+            // ratio to report.
+            return None;
+        }
+
+        Some(air_kg / fuel_kg / stoichiometric_air_fuel_ratio)
+    }
+
+    pub fn normalized(self) -> Self {
+        Self {
+            oxygen_kg: self.oxygen_kg.max(0.0),
+            fuel_kg: self.fuel_kg.max(0.0),
+            inert_kg: self.inert_kg.max(0.0),
+            products_kg: self.products_kg.max(0.0),
+        }
+    }
+
+    pub fn add_dry_air(&mut self, air_mass_kg: f64) {
+        if air_mass_kg <= 0.0 {
+            return;
+        }
+
+        self.oxygen_kg += air_mass_kg * DRY_AIR_OXYGEN_MASS_FRACTION;
+        self.inert_kg += air_mass_kg * DRY_AIR_INERT_MASS_FRACTION;
+    }
+
+    pub fn add_products(&mut self, products_mass_kg: f64) {
+        self.products_kg += products_mass_kg.max(0.0);
+    }
+
+    pub fn remove_proportional(&mut self, mass_kg: f64) {
+        let total_mass_kg = self.total_mass_kg();
+        if mass_kg <= 0.0 || total_mass_kg <= 0.0 {
+            return;
+        }
+
+        let removed_fraction = (mass_kg / total_mass_kg).clamp(0.0, 1.0);
+        self.oxygen_kg *= 1.0 - removed_fraction;
+        self.fuel_kg *= 1.0 - removed_fraction;
+        self.inert_kg *= 1.0 - removed_fraction;
+        self.products_kg *= 1.0 - removed_fraction;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,6 +160,66 @@ pub struct ChamberProperties {
     pub minimum_temperature_k: f64,
 }
 
+pub fn mixture_chamber_properties(
+    species: ChamberSpeciesMasses,
+    fallback: ChamberProperties,
+) -> ChamberProperties {
+    let species = species.normalized();
+    let total_mass_kg = species.total_mass_kg();
+    if total_mass_kg <= fallback.minimum_mass_kg.max(0.0) {
+        return fallback;
+    }
+
+    // Initial Phase 3 approximation: fixed per-species ideal-gas constants and cv values,
+    // mixed by mass fraction. This keeps the conserved-state API replaceable later.
+    let gas_constant_j_per_kg_k = (species.oxygen_kg * OXYGEN_GAS_CONSTANT_J_PER_KG_K
+        + species.fuel_kg * FUEL_VAPOR_GAS_CONSTANT_J_PER_KG_K
+        + species.inert_kg * INERT_GAS_CONSTANT_J_PER_KG_K
+        + species.products_kg * PRODUCTS_GAS_CONSTANT_J_PER_KG_K)
+        / total_mass_kg;
+    let cv_j_per_kg_k = (species.oxygen_kg * OXYGEN_CV_J_PER_KG_K
+        + species.fuel_kg * FUEL_VAPOR_CV_J_PER_KG_K
+        + species.inert_kg * INERT_CV_J_PER_KG_K
+        + species.products_kg * PRODUCTS_CV_J_PER_KG_K)
+        / total_mass_kg;
+    let specific_heat_ratio = if cv_j_per_kg_k > 0.0 {
+        1.0 + gas_constant_j_per_kg_k / cv_j_per_kg_k
+    } else {
+        fallback.specific_heat_ratio
+    };
+
+    ChamberProperties {
+        gas_constant_j_per_kg_k,
+        specific_heat_ratio,
+        minimum_mass_kg: fallback.minimum_mass_kg,
+        minimum_temperature_k: fallback.minimum_temperature_k,
+    }
+}
+
+pub fn species_internal_energy_j(
+    species: ChamberSpeciesMasses,
+    temperature_k: f64,
+    fallback: ChamberProperties,
+) -> f64 {
+    let species = species.normalized();
+    let total_mass_kg = species.total_mass_kg();
+    if total_mass_kg <= fallback.minimum_mass_kg.max(0.0) {
+        return total_mass_kg
+            * cv(
+                fallback.gas_constant_j_per_kg_k,
+                fallback.specific_heat_ratio,
+            )
+            * temperature_k.max(fallback.minimum_temperature_k);
+    }
+
+    let cv_mass_sum_j_per_k = species.oxygen_kg * OXYGEN_CV_J_PER_KG_K
+        + species.fuel_kg * FUEL_VAPOR_CV_J_PER_KG_K
+        + species.inert_kg * INERT_CV_J_PER_KG_K
+        + species.products_kg * PRODUCTS_CV_J_PER_KG_K;
+
+    cv_mass_sum_j_per_k * temperature_k.max(fallback.minimum_temperature_k)
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ChamberDerivatives {
     pub mass_rate_kg_per_s: f64,
@@ -50,6 +227,19 @@ pub struct ChamberDerivatives {
     pub pressure_rate_pa_per_s: f64,
     pub inlet_mass_rate_kg_per_s: f64,
     pub outlet_mass_rate_kg_per_s: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChamberRk4Stage {
+    pub elapsed_seconds: f64,
+    pub state: ChamberState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChamberRk4StageInputs {
+    pub boundary: ChamberBoundary,
+    pub inlet: FlowBoundary,
+    pub outlet: FlowBoundary,
 }
 
 pub fn chamber_derivatives(
@@ -210,13 +400,73 @@ pub fn step_rk4(
 ) -> ChamberState {
     assert!(timestep_seconds >= 0.0, "timestep must be non-negative");
 
-    let k1 = chamber_derivatives(state, boundary, inlet, outlet, properties);
+    step_rk4_with_stage_inputs(
+        state,
+        |_| ChamberRk4StageInputs {
+            boundary,
+            inlet,
+            outlet,
+        },
+        properties,
+        timestep_seconds,
+    )
+}
+
+pub fn step_rk4_with_stage_inputs(
+    state: ChamberState,
+    stage_inputs: impl Fn(ChamberRk4Stage) -> ChamberRk4StageInputs,
+    properties: ChamberProperties,
+    timestep_seconds: f64,
+) -> ChamberState {
+    assert!(timestep_seconds >= 0.0, "timestep must be non-negative");
+
+    let inputs_1 = stage_inputs(ChamberRk4Stage {
+        elapsed_seconds: 0.0,
+        state,
+    });
+    let k1 = chamber_derivatives(
+        state,
+        inputs_1.boundary,
+        inputs_1.inlet,
+        inputs_1.outlet,
+        properties,
+    );
     let k2_state = derivative_state(state, k1, timestep_seconds * 0.5, properties);
-    let k2 = chamber_derivatives(k2_state, boundary, inlet, outlet, properties);
+    let inputs_2 = stage_inputs(ChamberRk4Stage {
+        elapsed_seconds: timestep_seconds * 0.5,
+        state: k2_state,
+    });
+    let k2 = chamber_derivatives(
+        k2_state,
+        inputs_2.boundary,
+        inputs_2.inlet,
+        inputs_2.outlet,
+        properties,
+    );
     let k3_state = derivative_state(state, k2, timestep_seconds * 0.5, properties);
-    let k3 = chamber_derivatives(k3_state, boundary, inlet, outlet, properties);
+    let inputs_3 = stage_inputs(ChamberRk4Stage {
+        elapsed_seconds: timestep_seconds * 0.5,
+        state: k3_state,
+    });
+    let k3 = chamber_derivatives(
+        k3_state,
+        inputs_3.boundary,
+        inputs_3.inlet,
+        inputs_3.outlet,
+        properties,
+    );
     let k4_state = derivative_state(state, k3, timestep_seconds, properties);
-    let k4 = chamber_derivatives(k4_state, boundary, inlet, outlet, properties);
+    let inputs_4 = stage_inputs(ChamberRk4Stage {
+        elapsed_seconds: timestep_seconds,
+        state: k4_state,
+    });
+    let k4 = chamber_derivatives(
+        k4_state,
+        inputs_4.boundary,
+        inputs_4.inlet,
+        inputs_4.outlet,
+        properties,
+    );
 
     clamp_state(
         ChamberState {

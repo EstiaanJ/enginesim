@@ -1,4 +1,4 @@
-use crate::combustion::WiebeParameters;
+use crate::combustion::{MixtureLimits, WiebeParameters, default_mixture_limits};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -7,10 +7,11 @@ pub struct EngineDefinition {
     pub geometry: CylinderGeometryDefinition,
     pub gas: GasDefinition,
     pub boundaries: BoundaryDefinition,
+    #[serde(default)]
+    pub intake_exhaust: IntakeExhaustDefinition,
     pub valves: ValveTrainDefinition,
     pub crank: CrankDefinition,
     pub combustion: CombustionDefinition,
-    pub simulation: SimulationDefinition,
 }
 
 impl EngineDefinition {
@@ -56,6 +57,52 @@ pub struct BoundaryDefinition {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct IntakeExhaustDefinition {
+    pub intake_plenum_volume_m3: f64,
+    pub throttle_maximum_area_m2: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_throttle_maximum_area_m2: Option<f64>,
+    pub intake_runner: PipeDefinition,
+    pub exhaust_runner: PipeDefinition,
+}
+
+impl Default for IntakeExhaustDefinition {
+    fn default() -> Self {
+        Self {
+            intake_plenum_volume_m3: 0.0015,
+            throttle_maximum_area_m2: 0.00048,
+            idle_throttle_maximum_area_m2: None,
+            intake_runner: PipeDefinition {
+                number_of_cells: 8,
+                total_length_m: 0.4,
+                area_m2: 0.00048,
+            },
+            exhaust_runner: PipeDefinition {
+                number_of_cells: 8,
+                total_length_m: 0.4,
+                area_m2: 0.000345,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct PipeDefinition {
+    pub number_of_cells: usize,
+    pub total_length_m: f64,
+    pub area_m2: f64,
+}
+
+impl PipeDefinition {
+    /// Per-cell length derived from the total runner length and cell count.
+    /// The 1D solver still works on uniform cells, so this is how the
+    /// `total_length_m` / `number_of_cells` data maps onto cell geometry.
+    pub fn cell_length_m(&self) -> f64 {
+        self.total_length_m / self.number_of_cells.max(1) as f64
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct ValveTrainDefinition {
     pub intake: ValveDefinition,
     pub exhaust: ValveDefinition,
@@ -86,6 +133,8 @@ pub struct CombustionDefinition {
     pub fuel_lower_heating_value_j_per_kg: f64,
     pub combustion_efficiency: f64,
     pub heat_loss_fraction: f64,
+    #[serde(default = "default_mixture_limits")]
+    pub mixture_limits: MixtureLimits,
     pub spark_timing: SparkTimingDefinition,
     pub ignition_delay_deg: f64,
     pub wiebe: WiebeParameters,
@@ -97,11 +146,6 @@ pub struct SparkTimingDefinition {
     pub low_speed_advance_deg_btdc: f64,
     pub high_speed_rpm: f64,
     pub high_speed_advance_deg_btdc: f64,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-pub struct SimulationDefinition {
-    pub timestep_seconds: f64,
 }
 
 #[cfg(test)]
@@ -125,7 +169,22 @@ mod tests {
         assert_eq!(definition.valves.exhaust.close_angle_deg, 370.0);
         assert_eq!(definition.valves.exhaust.valve_diameter_m, 0.022);
         assert_eq!(definition.valves.exhaust.valve_count, 2);
+        assert_eq!(definition.intake_exhaust.intake_runner.number_of_cells, 8);
+        assert_eq!(definition.intake_exhaust.intake_runner.total_length_m, 0.04);
+        assert_eq!(
+            definition.intake_exhaust.intake_runner.cell_length_m(),
+            0.005
+        );
+        assert_eq!(definition.intake_exhaust.intake_plenum_volume_m3, 0.0010);
+        assert_eq!(
+            definition.intake_exhaust.idle_throttle_maximum_area_m2,
+            Some(0.00003)
+        );
         assert_eq!(definition.combustion.lambda_target, 1.0);
+        assert_eq!(
+            definition.combustion.mixture_limits,
+            default_mixture_limits()
+        );
         assert!(definition.combustion.enabled);
     }
 

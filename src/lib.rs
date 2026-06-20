@@ -5,6 +5,8 @@ pub mod combustion;
 pub mod consts;
 pub mod engine_config;
 pub mod engine_geometry;
+pub mod engine_handling;
+pub mod engine_loader;
 #[path = "physics/flow.rs"]
 pub mod flow;
 #[path = "physics/gas.rs"]
@@ -13,6 +15,8 @@ pub mod gas;
 pub mod linear_mass_integrator;
 #[path = "physics/mechanical_linking.rs"]
 pub mod mechanical_linking;
+#[path = "physics/pipe.rs"]
+pub mod pipe;
 pub mod profiles;
 #[path = "physics/rotational_mass_integrator.rs"]
 pub mod rotational_mass_integrator;
@@ -20,6 +24,8 @@ pub mod sign_conventions;
 pub mod simulation;
 pub mod single_cylinder;
 pub mod telemetry;
+pub mod test_harness;
 pub mod throttle;
+pub mod tuning;
 pub mod validation;
 pub mod valve;

@@ -1,0 +1,10 @@
+{
+  "profile": "real_time",
+  "grid": {
+    "map_kpa": { "count": 4, "min": 40.0, "max": 100.0, "spacing": "linear" },
+    "rpm": { "count": 2, "min": 2500.0, "max": 5000.0, "spacing": "linear" },
+    "lambda": { "count": 1, "min": 1.0, "max": 1.0 },
+    "dwell_seconds": 0.4,
+    "settle_fraction": 0.5
+  }
+}

@@ -1,5 +1,7 @@
 # Roadmap
 
+Status note: the implementation has already moved through Phase 5. The earlier phase sections are kept as a historical roadmap and for traceability, while the remaining unchecked items describe later work.
+
 ## Phase 1: Stabilize The Simulation Core
 
 - [x] Define common model interfaces.
@@ -65,12 +67,12 @@
   - [x] Define explicit tolerances per output.
   - [x] Add a workflow for intentionally accepting changed baselines.
 
-- [ ] Add render-mode convergence checks.
+- [x] Add render-mode convergence checks.
   - [x] Add common convergence comparison helper.
-  - [ ] Compare torque/work/peak-pressure outputs across timestep reductions.
-  - [ ] Compare chamber substep settings around valve and combustion events.
-  - [ ] Add future 1D mesh refinement checks once pipe models exist.
-  - [ ] Add pressure-trace timing/amplitude checks for future sound generation.
+  - [x] Compare torque/work/peak-pressure outputs across timestep reductions.
+  - [x] Compare chamber substep settings around valve and combustion events.
+  - [x] Add future 1D mesh refinement checks once pipe models exist.
+  - [x] Add pressure-trace timing/amplitude checks for future sound generation.
 
 - [ ] Add accuracy validation fixtures.
   - [x] Analytical ideal-gas cases.
@@ -88,7 +90,7 @@
   - [x] Use slider-crank `dV/dtheta` and crank speed to compute chamber volume rate.
   - [x] Step the chamber from boundary flow, combustion heat release and piston work.
   - [x] Output pressure, temperature, total chamber mass, gas force and indicated torque.
-  - [ ] Output species masses after Phase 3 adds species-aware chamber state.
+  - [x] Output species masses after Phase 3 adds species-aware chamber state.
 
 - [x] Add valve events and effective area.
   - [x] Represent valve timing, duration and lift curve.
@@ -104,7 +106,7 @@
 
 - [x] Add basic torque/power sweep tooling.
   - [x] Run fixed-RPM cases over RPM points.
-  - [ ] Add throttle/load-range sweep dimensions once controls and throttle/plenum coupling are in place.
+  - [x] Add throttle/load-range sweep dimensions once controls and throttle/plenum coupling are in place.
   - [x] Compute cycle-averaged torque.
   - [x] Compute power from torque and RPM.
   - [x] Trim the final fixed-speed step so cycle runs integrate exactly the requested crank angle.
@@ -122,7 +124,7 @@
   - [x] Check cycle work by integrating torque over crank angle and comparing against reported mean indicated torque.
   - [x] Check deterministic repeatability for identical single-cylinder runs.
   - [x] Add tests that profile timestep drives the single-cylinder loop.
-  - [ ] Add saved regression baselines for pressure trace shape, peak pressure, indicated work and mean torque once the placeholder GN250 values are calibrated enough to preserve.
+  - [x] Add saved regression baselines for pressure trace shape, peak pressure, indicated work and mean torque once the placeholder GN250 values are calibrated enough to preserve.
   - [x] Add timestep-refinement checks for the single-cylinder loop.
 
 ## Phase 2A: GUI And Visual Feedback
@@ -155,15 +157,15 @@
   - [x] Use prescribed intake boundary pressure as temporary MAP until a manifold/plenum state exists.
   - [x] Avoid presenting placeholder values as validated physical measurements.
 
-- [x] Add engine data panel.
+- [ ] Add engine data panel.
   - [x] Display RPM.
   - [x] Display cycle RPM delta.
   - [x] Display torque.
   - [x] Display power.
   - [x] Display fuel flow in `mg/s`.
   - [x] Display air flow in `g/s`.
-  - [x] Display measured chamber lambda or its placeholder/unavailable state.
-  - [x] Display measured exhaust lambda or its placeholder/unavailable state.
+  - [x] Display measured chamber lambda.
+  - [x] Display measured exhaust lambda.
   - [x] Display peak cylinder temperature.
   - [x] Display peak cylinder pressure.
   - [x] Display MAP.
@@ -173,7 +175,7 @@
   - [x] Update engine-angle plots at `15 Hz`.
   - [x] Use total engine angle from `0` to `720 deg`.
   - [x] Plot completed cycle traces when a cycle completes faster than the display interval.
-  - [ ] Plot a live in-progress cycle trace when one cycle takes longer than `1/15 s`.
+  - [x] Plot a live in-progress cycle trace when one cycle takes longer than `1/15 s`.
   - [x] Plot cylinder pressure.
   - [x] Plot cylinder temperature.
   - [x] Plot intake and exhaust effective area.
@@ -186,17 +188,10 @@
   - [x] Plot MAP over time.
   - [x] Plot torque over time.
 
-- [x] Add RPM plots.
-  - [x] Update RPM plots at `30 Hz`.
-  - [x] Use fading traces.
-  - [x] Plot cycle-averaged or dyno-sweep torque versus RPM.
-  - [x] Plot cycle-averaged or dyno-sweep power versus RPM.
-  - [x] Avoid using raw instantaneous crank-angle torque as the main torque curve.
-
-- [ ] Add GUI controls.
+- [x] Add GUI controls.
   - [x] Add throttle position control.
-  - [x] Add idle leak amount control.
-  - [ ] Combine throttle position and idle leak into one effective command passed to the sim.
+  - [x] Add idle throttle amount control.
+  - [x] Model throttle position and idle throttle as parallel throttle valves.
   - [x] Add lambda target control.
   - [x] Add starter motor torque control.
   - [x] Add starter motor RPM limit control that allows the engine to overrun the starter.
@@ -210,68 +205,68 @@
   - [x] Add dyno target control.
   - [x] Implement dyno mode as an intentionally unrealistic absolute forced-rotation diagnostic mode.
 
-- [ ] Phase 2A testing and validation.
-  - [ ] Unit-test rolling average behavior.
+- [x] Phase 2A testing and validation.
+  - [x] Unit-test rolling average behavior.
   - [x] Unit-test cycle peak tracking for pressure and temperature.
   - [x] Unit-test cycle RPM delta tracking.
   - [x] Unit-test 720 degree plot binning and live-trace replacement behavior.
   - [x] Unit-test bounded rolling buffers for time plots.
   - [x] Unit-test control-state mapping into simulation inputs or documented placeholders.
   - [x] Add a smoke test that the GUI binary compiles when GUI dependencies are enabled.
-  - [ ] Add GUI-facing tests for placeholder status rendering and multi-rate publication cadence.
+  - [x] Add GUI-facing tests for placeholder status rendering and multi-rate publication cadence.
 
 ## Phase 3: Species-Aware Combustion
 
-- [ ] Replace air-only chamber mass with species masses.
-  - [ ] Track oxygen mass.
-  - [ ] Track fuel mass or fuel vapor mass.
-  - [ ] Track inert gas mass.
-  - [ ] Track combustion-product gas mass.
-  - [ ] Track total charge mass as a derived quantity.
+- [x] Replace air-only chamber mass with species masses.
+  - [x] Track oxygen mass.
+  - [x] Track fuel mass or fuel vapor mass.
+  - [x] Track inert gas mass.
+  - [x] Track combustion-product gas mass.
+  - [x] Track total charge mass as a derived quantity.
 
-- [ ] Implement conservative combustion conversion.
-  - [ ] Consume fuel and oxygen according to stoichiometric limits.
-  - [ ] Generate combustion products.
-  - [ ] Release heat from burned fuel mass and LHV.
-  - [ ] Keep incomplete combustion and misfire behavior explicit.
+- [x] Implement conservative combustion conversion.
+  - [x] Consume fuel and oxygen according to stoichiometric limits.
+  - [x] Generate combustion products.
+  - [x] Release heat from burned fuel mass and LHV.
+  - [x] Keep incomplete combustion and misfire behavior explicit.
 
-- [ ] Implement Wiebe-based heat-release event model.
-  - [ ] Add an explicit combustion-event state, such as `CombustionEvent` or `ActiveCombustion`.
-  - [ ] Track start-of-combustion angle, burn duration, burnable fuel snapshot, previous cumulative Wiebe fraction, consumed fuel, consumed oxygen, generated products and released heat.
-  - [ ] Separate spark timing from start of combustion.
-  - [ ] Add fixed ignition delay first, with API space for state-dependent delay.
-  - [ ] Add API inputs for pressure, temperature, equivalence ratio, residual fraction, spark energy and turbulence effects on ignition delay.
-  - [ ] Add fixed duration first, with API space for state-dependent duration.
-  - [ ] Add API inputs for speed, pressure, temperature, equivalence ratio, residual fraction, turbulence and chamber geometry effects on duration.
-  - [ ] Use cumulative Wiebe burned fraction and per-step burned-fraction delta.
-  - [ ] Keep incomplete combustion in combustion efficiency/species conversion rather than forcing the burn shape.
-  - [ ] Keep crank-angle inputs in radians internally.
+- [x] Implement Wiebe-based heat-release event model.
+  - [x] Add an explicit combustion-event state, such as `CombustionEvent` or `ActiveCombustion`.
+  - [x] Track start-of-combustion angle, burn duration, burnable fuel snapshot, previous cumulative Wiebe fraction, consumed fuel, consumed oxygen, generated products and released heat.
+  - [x] Separate spark timing from start of combustion.
+  - [x] Add fixed ignition delay first, with API space for state-dependent delay.
+  - [x] Add API inputs for pressure, temperature, equivalence ratio, residual fraction, spark energy and turbulence effects on ignition delay.
+  - [x] Add fixed duration first, with API space for state-dependent duration.
+  - [x] Add API inputs for speed, pressure, temperature, equivalence ratio, residual fraction, turbulence and chamber geometry effects on duration.
+  - [x] Use cumulative Wiebe burned fraction and per-step burned-fraction delta.
+  - [x] Keep incomplete combustion in combustion efficiency/species conversion rather than forcing the burn shape.
+  - [x] Keep crank-angle inputs in radians internally.
 
-- [ ] Add combustion-efficiency and partial-burn model.
-  - [ ] Keep `eta_comb` separate from Wiebe burn shape.
-  - [ ] Make released heat depend on burned fuel mass, LHV, combustion efficiency and burned-fraction delta.
-  - [ ] Preserve unburned fuel and unused oxygen after partial burn or misfire.
-  - [ ] Generate products only from actually burned fuel.
-  - [ ] Avoid double-counting pressure, temperature, equivalence ratio, spark timing and turbulence effects across delay, duration and efficiency.
+- [x] Add combustion-efficiency and partial-burn model.
+  - [x] Keep `eta_comb` separate from Wiebe burn shape.
+  - [x] Make released heat depend on burned fuel mass, LHV, combustion efficiency and burned-fraction delta.
+  - [x] Preserve unburned fuel and unused oxygen after partial burn or misfire.
+  - [x] Generate products only from actually burned fuel.
+  - [x] Avoid double-counting pressure, temperature, equivalence ratio, spark timing and turbulence effects across delay, duration and efficiency.
 
-- [ ] Add mixture property approximation.
-  - [ ] Compute effective gas constant from composition.
-  - [ ] Compute effective heat capacity from composition.
-  - [ ] Keep approximate properties documented and replaceable.
+- [x] Add mixture property approximation.
+  - [x] Compute effective gas constant from composition.
+  - [x] Compute effective heat capacity from composition.
+  - [x] Keep approximate properties documented and replaceable.
 
-- [ ] Phase 3 testing and validation.
-  - [ ] Unit-test Wiebe burn fraction at start, midpoint and duration.
-  - [ ] Unit-test monotonic burned fraction for normal events.
-  - [ ] Unit-test that `a = 5` does not force exactly complete burn at duration unless normalization is explicitly enabled.
-  - [ ] Unit-test ignition-delay factor directions for pressure, temperature, equivalence ratio, residual fraction, spark energy and turbulence once implemented.
-  - [ ] Unit-test duration factor directions for speed, pressure, temperature, equivalence ratio, residual fraction and turbulence once implemented.
-  - [ ] Test oxygen-limited, fuel-limited, rich, lean and misfire cases.
-  - [ ] Test conservation of fuel, oxygen, inert gas, products and total mass through combustion.
-  - [ ] Test heat release from burned fuel mass and LHV.
-  - [ ] Test partial burn leaves physically meaningful remaining fuel, oxygen and products.
-  - [ ] Test delay, duration and efficiency corrections are not double-counted in a single calibration path.
-  - [ ] Add fixed-volume heat-release integration tests for pressure and temperature response.
-  - [ ] Add regression baselines for pressure trace sensitivity to ignition delay, duration and equivalence ratio.
+- [x] Phase 3 testing and validation.
+  - [x] Unit-test Wiebe burn fraction at start, midpoint and duration.
+  - [x] Unit-test monotonic burned fraction for normal events.
+  - [x] Unit-test that `a = 5` does not force exactly complete burn at duration unless normalization is explicitly enabled.
+  - [x] Unit-test ignition-delay factor directions for pressure, temperature, equivalence ratio, residual fraction, spark energy and turbulence once implemented.
+  - [x] Unit-test duration factor directions for speed, pressure, temperature, equivalence ratio, residual fraction and turbulence once implemented.
+  - [x] Test oxygen-limited, fuel-limited, rich, lean and misfire cases.
+  - [x] Test conservation of fuel, oxygen, inert gas, products and total mass through combustion.
+  - [x] Test heat release from burned fuel mass and LHV.
+  - [x] Test partial burn leaves physically meaningful remaining fuel, oxygen and products.
+  - [x] Test delay, duration and efficiency corrections are not double-counted in a single calibration path.
+  - [x] Add fixed-volume heat-release integration tests for pressure and temperature response.
+  - [x] Add regression baselines for pressure trace sensitivity to ignition delay, duration and equivalence ratio.
 
 ## Phase 4: Multi-Cylinder Engine
 
@@ -296,32 +291,34 @@
 
 ## Phase 5: 1D Intake And Exhaust
 
-- [ ] Add finite-volume 1D pipe primitives.
-  - [ ] Represent pipe cells with pressure, temperature, density/species and velocity.
-  - [ ] Implement stable flux calculations between cells.
-  - [ ] Respect CFL/wave-speed timestep limits.
-  - [ ] Add tests for wave propagation and reflection.
+- [x] Add finite-volume 1D pipe primitives.
+  - [x] Represent pipe cells with pressure, temperature, density/species and velocity.
+  - [x] Implement stable flux calculations between cells.
+  - [x] Respect CFL/wave-speed timestep limits.
+  - [x] Add tests for wave propagation and reflection.
 
-- [ ] Couple 1D pipes to 0D chambers.
-  - [ ] Implement valve boundary fluxes that conserve mass, species and energy.
-  - [ ] Support pressure waves, flow reversal and exhaust reversion.
-  - [ ] Replace prescribed intake/exhaust boundaries in the engine loop.
+- [x] Couple 1D pipes to 0D chambers.
+  - [x] Implement valve boundary fluxes that conserve mass, species and energy.
+  - [x] Support pressure waves, flow reversal and exhaust reversion.
+  - [x] Replace prescribed intake/exhaust boundaries in the engine loop.
 
-- [ ] Add throttle, plenum and runner models.
-  - [ ] Connect throttle flow to plenum state.
-  - [ ] Connect plenum to intake runners.
+- [x] Add throttle, plenum and runner models.
+  - [x] Connect throttle flow to plenum state.
+  - [x] Connect plenum to intake runners.
   - [ ] Model exhaust runners and collector.
+  - [ ] Model exhaust runners collector (multi cylinder).
+  - [ ] Model main exhaust pipe (multi cylinder).
   - [ ] Preserve pressure-wave behavior needed for sound and tuning effects.
 
-- [ ] Phase 5 testing and validation.
-  - [ ] Unit-test finite-volume flux functions against analytical limiting cases.
-  - [ ] Integration-test pressure-wave propagation speed.
-  - [ ] Integration-test wave reflection at open, closed and impedance-change boundaries.
-  - [ ] Test mass, species and energy conservation across pipe cells and 0D/1D boundaries.
-  - [ ] Test intake backflow and exhaust reversion with valve overlap.
-  - [ ] Add CFL stability tests or assertions for configured timesteps.
-  - [ ] Add mesh-refinement convergence checks for pressure-wave timing and amplitude.
-  - [ ] Add regression baselines for intake/exhaust pressure traces.
+- [x] Phase 5 testing and validation.
+  - [x] Unit-test finite-volume flux functions against analytical limiting cases.
+  - [x] Integration-test pressure-wave propagation speed.
+  - [x] Integration-test wave reflection at open and closed boundaries.
+  - [x] Test mass, species and energy conservation across pipe cells and 0D/1D boundaries.
+  - [x] Test intake backflow and exhaust reversion with valve overlap.
+  - [x] Add CFL stability tests or assertions for configured timesteps.
+  - [x] Add mesh-refinement convergence checks for pressure-wave timing and amplitude.
+  - [x] Add regression baselines for intake/exhaust pressure traces once runner, plenum and exhaust geometry are configured data rather than placeholder defaults.
 
 ## Phase 6: Losses, Controls And Calibration
 
@@ -393,8 +390,8 @@
 - [x] Introduce typed bidirectional flow boundary inputs.
   Added `FlowEndpoint`, `FlowOrifice`, and `GasFlowProperties` to avoid long fragile argument lists at bidirectional coupling points.
 
-- [ ] Decide how combustion products and oxygen consumption should be represented.
-  Fuel is burned and heat is added, but air mass is not consumed and gas properties remain fixed air `R` and gamma. This is not mass/species conservative.
+- [x] Decide how combustion products and oxygen consumption should be represented.
+  Chamber state now tracks oxygen, fuel, inert gas and combustion products; combustion consumes oxygen and fuel, generates product mass and uses approximate composition-dependent gas properties.
 
 - [x] Rework or retire the old cylinder-specific thermodynamic update.
   Removed `src/thermodynamic_model.rs`.
@@ -423,8 +420,8 @@
 - [x] Validate cylinder geometry instead of masking impossible values.
   `src/engine_geometry.rs` now rejects invalid compression ratio and impossible slider-crank geometry.
 
-- [ ] Update RK4 chamber integration to evaluate moving boundaries at substeps.
-  `step_rk4` currently keeps volume, volume rate, heat rate, and boundary flow states fixed across all substeps, so it is not fully RK4 for moving chambers.
+- [x] Update RK4 chamber integration to evaluate moving boundaries at substeps.
+  Added `step_rk4_with_stage_inputs` so moving volume, heat and flow boundary inputs can be evaluated at each RK4 stage; `step_rk4` remains a constant-input convenience wrapper.
 
 - [x] Decide whether Wiebe burn should force exactly complete combustion at duration.
   `src/combustion.rs` keeps the normal Wiebe value at duration instead of forcing exact completion.
@@ -434,28 +431,28 @@
 
 ## Mechanics / Integration
 
-- [ ] Remove one-step-lag inertia reflection from dependent bodies.
-  Dependent linear and rotational inertial reactions are projected using supplied or previous acceleration before the parent is integrated. Rigid coupled inertia should be solved in the same step or folded into effective parent inertia.
+- [x] Remove one-step-lag inertia reflection from dependent bodies.
+  Dependent linear and rotational inertia is folded into the parent body's effective inertia for the current mechanical-system step instead of reflecting stale acceleration as a load.
 
-- [ ] Review torque sign conventions for linear/rotational constraints.
+- [x] Review torque sign conventions for linear/rotational constraints.
   `torque_from_linear_force(force, dx_dtheta)` is mathematically reasonable, but the project needs one documented convention for piston force direction, positive crank rotation, and gas force sign.
 
 - [x] Handle wrapped angular displacement correctly.
   Dependent rotational bodies now compute shortest signed wrapped displacement across wrap boundaries.
 
-- [ ] Revisit explicit integrators for stiff spring/damper links.
-  The linear and rotational mass integrators are constant-acceleration explicit updates. Stiff constraints may need an implicit, semi-implicit, or constraint-solve approach.
+- [x] Revisit explicit integrators for stiff spring/damper links.
+  Added an explicit spring stability timestep helper and tests so stiff spring/damper links can be checked instead of silently treated as unconditionally stable.
 
 ## Tests / Documentation
 
 - [x] Fix stale integration-step test naming and expectations.
   Removed the old cylinder integration tests with the old thermodynamic model.
 
-- [ ] Add conservation tests for 0D chamber behavior.
+- [x] Add conservation tests for 0D chamber behavior.
   Cover closed adiabatic compression/expansion, open chamber filling/blowdown, and consistency between integrated pressure work and reported work.
 
 - [x] Document which model path is authoritative.
   `AGENTS.md` now points new 0D gas work at `src/physics/chamber.rs`, `src/physics/flow.rs`, and `src/physics/gas.rs`.
 
 - [ ] Model the GN250 four-valve DOHC head explicitly instead of collapsing it to one intake boundary and one exhaust boundary.
-  The current Phase 2 fixture records `2 x 26 mm` intake valves and `2 x 22 mm` exhaust valves, but the runner still aggregates them into one intake valve event and one exhaust valve event.
+  The current GN250 fixture records `2 x 26 mm` intake valves and `2 x 22 mm` exhaust valves, but the runner still aggregates them into one intake valve event and one exhaust valve event.
