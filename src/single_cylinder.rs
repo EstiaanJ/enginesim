@@ -14,7 +14,7 @@ use crate::physics::chamber::{
     DRY_AIR_OXYGEN_MASS_FRACTION, chamber_pressure_pa, integrate_internal_energy_rk4,
     mixture_chamber_properties, species_internal_energy_j,
 };
-use crate::physics::gas::{cp, cv};
+use crate::physics::gas::cv;
 use crate::physics::pipe::{PipeBoundaryFlux, PlenumState, ThrottlePlenumInput};
 use crate::profiles::SimulationProfile;
 use crate::simulation::{StepContext, StepModel};
@@ -30,7 +30,7 @@ use onedpipes::{
 };
 
 const LOW_SPEED_FUELING_FALLBACK_RPM: f64 = 500.0;
-const PLENUM_RUNNER_COUPLING_CELL_FRACTION: f64 = 0.05;
+const PLENUM_RUNNER_COUPLING_CELL_FRACTION: f64 = 0.5;
 const VALVE_COUPLING_CELL_FRACTION: f64 = 0.5;
 const INTAKE_PLENUM_EXTERNAL_ID: usize = 0;
 const INTAKE_VALVE_EXTERNAL_ID: usize = 1;
@@ -570,7 +570,6 @@ impl SingleCylinderEngine {
         let chamber_donor_budget_kg =
             (self.chamber_species.total_mass_kg() - chamber_props.minimum_mass_kg).max(0.0);
 
-        let intake_runner_mass_before_kg = self.pipes.pipe_total_mass_kg(self.pipes.intake_runner);
         let accepted_transfers = self.pipes.step_stable(
             timestep_seconds,
             self.pipes.boundary_request(
@@ -601,22 +600,7 @@ impl SingleCylinderEngine {
             plenum_donor_budget_kg,
             chamber_donor_budget_kg,
         );
-        let [mut plenum_transfer, intake_transfer, exhaust_transfer] = accepted_transfers;
-        if ideal_map_pressure_pa.is_none() {
-            let intake_runner_mass_after_kg =
-                self.pipes.pipe_total_mass_kg(self.pipes.intake_runner);
-            let balanced_plenum_transfer_kg = -(intake_runner_mass_after_kg
-                - intake_runner_mass_before_kg)
-                - intake_transfer.mass_kg;
-            if balanced_plenum_transfer_kg.is_finite() {
-                plenum_transfer = accepted_transfer_from_plenum_mass_delta(
-                    balanced_plenum_transfer_kg,
-                    self.intake_plenum.species,
-                    self.intake_plenum.chamber_state.temperature_k,
-                    plenum_fallback_properties,
-                );
-            }
-        }
+        let [plenum_transfer, intake_transfer, exhaust_transfer] = accepted_transfers;
         let plenum_to_runner_flux = plenum_transfer.into_flux(timestep_seconds);
         let intake_flux = intake_transfer.into_flux(timestep_seconds);
         let exhaust_flux = exhaust_transfer.into_flux(timestep_seconds);
@@ -1031,8 +1015,15 @@ impl SingleCylinderEngine {
                 .max(0.0);
         }
 
+        // A genuinely tiny-but-measured last-cycle reading (e.g. a
+        // near-closed throttle correctly starving induction) must still be
+        // trusted over the speed-density fallback: gating on
+        // `minimum_air_kg` here would silently re-inflate fueling to a full
+        // atmospheric estimate once a real, heavily throttled reading drops
+        // below that (near-zero) numerical floor. Only fall back when we
+        // have no completed-cycle measurement at all.
         self.last_completed_cycle_intake_air_kg
-            .filter(|air_kg| *air_kg > minimum_air_kg)
+            .filter(|air_kg| *air_kg > 0.0)
             .unwrap_or_else(|| {
                 speed_density_air_kg
                     .max(self.chamber_oxygen_equivalent_air_kg())
@@ -1367,10 +1358,6 @@ impl OneDPipeNetwork {
         self.model.pipe(pipe_id).config().area
     }
 
-    fn pipe_total_mass_kg(&self, pipe_id: PipeId) -> f64 {
-        self.model.pipe_total_mass(pipe_id)
-    }
-
     fn pipe_end_cell_mass_kg(&self, pipe_id: PipeId, end: DuctEnd) -> f64 {
         let duct = self.model.pipe(pipe_id);
         let state = self.pipe_end_state(pipe_id, end);
@@ -1650,23 +1637,6 @@ fn species_mass_to_chamber_species(
         fuel_kg: species.fuel_vapor / timestep_seconds,
         inert_kg: species.inert / timestep_seconds,
         products_kg: species.products / timestep_seconds,
-    }
-}
-
-fn accepted_transfer_from_plenum_mass_delta(
-    mass_kg: f64,
-    plenum_species: ChamberSpeciesMasses,
-    temperature_k: f64,
-    properties: ChamberProperties,
-) -> AcceptedPipeTransfer {
-    let cp_j_per_kg_k = cp(
-        properties.gas_constant_j_per_kg_k,
-        properties.specific_heat_ratio,
-    );
-    AcceptedPipeTransfer {
-        mass_kg,
-        energy_j: mass_kg * cp_j_per_kg_k * temperature_k.max(properties.minimum_temperature_k),
-        species_kg: chamber_species_to_pipe_fractions(plenum_species).scale(mass_kg),
     }
 }
 
