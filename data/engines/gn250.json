@@ -58,6 +58,13 @@
       "max_lift_m": 0.0016977,
       "opening_ramp_fraction": 0.8,
       "plateau_fraction": 0.0,
+      "lift_profile": {
+        "model": "segmented_cubic",
+        "ramp_lift_fraction": 0.25,
+        "ramp_duration_fraction": 0.1,
+        "main_lift_duration_fraction": 0.35,
+        "dwell_duration_fraction": 0.1
+      },
       "discharge_coefficient": 0.9
     },
     "exhaust": {
@@ -68,6 +75,13 @@
       "max_lift_m": 0.0016639,
       "opening_ramp_fraction": 0.5,
       "plateau_fraction": 0.0,
+      "lift_profile": {
+        "model": "segmented_cubic",
+        "ramp_lift_fraction": 0.25,
+        "ramp_duration_fraction": 0.1,
+        "main_lift_duration_fraction": 0.35,
+        "dwell_duration_fraction": 0.1
+      },
       "discharge_coefficient": 0.8
     }
   },

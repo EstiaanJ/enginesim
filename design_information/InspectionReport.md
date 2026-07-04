@@ -3,6 +3,10 @@
 **Original date:** 2026-06-17
 **Status reviewed:** 2026-06-20 — all tests pass (169 lib + integration/contract suites), `clippy -D warnings` clean.
 
+**2026-07-04 update:** since the last review, `src/multi_cylinder.rs` (Phase 4: multi-cylinder firing order, crank-phase scheduling, torque aggregation) and Phase 7 audio output (real-time GUI audio in `src/bin/engine_gui.rs` plus the offline `src/bin/render_audio.rs` renderer) have landed, along with the engine/handling JSON split (`src/engine_handling.rs`), the tuning GUI (`src/bin/tuning_gui.rs`, `src/tuning.rs`), and shapeable lift-based valve curves (`src/valve.rs`). The "Not started" list and Next Steps below predate this work and should be read as historical context, not current status; see `design_information/TODO.md` for the current roadmap state.
+
+**2026-07-04 repository update:** the active 1D pipe solver is now the sibling `../onedpipes` crate, referenced through Cargo's path dependency mechanism. The earlier integrated project state from `Previous Attempts/enginesim` is preserved as Git branch `depricated_1d` for future reference.
+
 > ✅ marks items completed (either already fixed before this review, or
 > implemented on the `inspection-fixes` branch). Items that still have a
 > description are open/deferred, with a short note on why where relevant.

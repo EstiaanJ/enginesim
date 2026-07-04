@@ -1,6 +1,6 @@
 # Roadmap
 
-Status note: the implementation has already moved through Phase 5. The earlier phase sections are kept as a historical roadmap and for traceability, while the remaining unchecked items describe later work.
+Status note: the implementation has moved through Phase 5, added Phase 4 multi-cylinder support (`src/multi_cylinder.rs`), and started Phase 7 sound output (real-time GUI audio plus the offline `render_audio` renderer). The active 1D solver is the sibling `../onedpipes` crate so both repositories can be developed and committed independently. The earlier integrated project state from `Previous Attempts/enginesim` is preserved as branch `depricated_1d`. The earlier phase sections are kept as a historical roadmap and for traceability, while the remaining unchecked items describe later work.
 
 ## Phase 1: Stabilize The Simulation Core
 
@@ -289,6 +289,8 @@ Status note: the implementation has already moved through Phase 5. The earlier p
   - [ ] Add regression baselines for total torque ripple, mean torque and per-cylinder peak pressure.
   - [x] Add validation checks that changing firing order changes torque trace phase but not mean torque for identical cylinders.
 
+`MultiCylinderEngine` (`src/multi_cylinder.rs`) implements this phase: it schedules independent `SingleCylinderEngine` instances by crank-phase offset, aggregates torque onto a shared crank, and reports RPM delta and cycle-averaged torque. The exhaust collector/main pipe items below remain open because they need this multi-cylinder primary-pipe scheduling as a prerequisite.
+
 ## Phase 5: 1D Intake And Exhaust
 
 - [x] Add finite-volume 1D pipe primitives.
@@ -305,10 +307,10 @@ Status note: the implementation has already moved through Phase 5. The earlier p
 - [x] Add throttle, plenum and runner models.
   - [x] Connect throttle flow to plenum state.
   - [x] Connect plenum to intake runners.
-  - [ ] Model exhaust runners and collector.
-  - [ ] Model exhaust runners collector (multi cylinder).
+  - [x] Model exhaust runners and collector (single primary into an optional momentum-preserving collector tailpipe; `intake_exhaust.exhaust_collector` in `src/engine_config.rs`, `pipe_to_pipe_interface_flux` in `src/physics/pipe.rs`).
+  - [ ] Model exhaust runners collector (multi cylinder) — needs multiple primaries merging into one collector; blocked on `MultiCylinderEngine` wiring per-cylinder exhaust pipes into a shared junction.
   - [ ] Model main exhaust pipe (multi cylinder).
-  - [ ] Preserve pressure-wave behavior needed for sound and tuning effects.
+  - [x] Preserve pressure-wave behavior needed for sound and tuning effects.
 
 - [x] Phase 5 testing and validation.
   - [x] Unit-test finite-volume flux functions against analytical limiting cases.
@@ -353,11 +355,13 @@ Status note: the implementation has already moved through Phase 5. The earlier p
 
 ## Phase 7: Sound And Render Outputs
 
-- [ ] Add audio signal extraction.
-  - [ ] Emit exhaust pressure traces at sufficient rate.
+- [x] Add audio signal extraction.
+  - [x] Emit exhaust pressure traces at sufficient rate (tailpipe exit pressure per sim step; `exhaust_collector_pressure_pa` / exhaust exit pressure output in `src/single_cylinder.rs`).
   - [ ] Emit intake pressure traces when useful.
-  - [ ] Define resampling/interpolation into audio sample rate.
-  - [ ] Keep sound generation deterministic for a fixed simulation output.
+  - [x] Define resampling/interpolation into audio sample rate (rate-controlled resampling into a lock-free ring in `src/bin/engine_gui.rs`; offline cycle-averaged resample-to-`.wav` in `src/bin/render_audio.rs`).
+  - [x] Keep sound generation deterministic for a fixed simulation output (`render_audio` offline path; the real-time GUI path is inherently live/interactive and not deterministic across runs).
+
+Two audio paths now exist: a real-time path in `src/bin/engine_gui.rs` (lock-free SPSC ring buffer via `rtrb`, rate control to hold the ring near half-full, tone shaping, played through `cpal`) for live/interactive listening, and an offline path in `src/bin/render_audio.rs` that bins tailpipe exit pressure by cycle angle, averages steady-state cycles together, and resamples the result to a looped `.wav` file. See the module docs in each file for details.
 
 - [ ] Add render-mode sweep outputs.
   - [ ] Torque curve.

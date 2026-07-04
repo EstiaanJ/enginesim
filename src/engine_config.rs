@@ -150,7 +150,6 @@ pub struct IntakeExhaustDefinition {
 }
 
 impl IntakeExhaustDefinition {
-
     /// Effective maximum idle-throttle bypass area, falling back to 10% of the
     /// main throttle area when not explicitly configured. Single source of truth
     /// shared by the runner (`single_cylinder`) and the GUI control mapping
@@ -223,6 +222,10 @@ pub struct ValveDefinition {
     /// Fraction of the open duration held at full lift (cam dwell).
     #[serde(default = "default_plateau_fraction")]
     pub plateau_fraction: f64,
+    /// Optional detailed lift-shape model. Omitted JSON keeps the legacy
+    /// cosine/plateau profile so existing fixtures do not change behaviour.
+    #[serde(default)]
+    pub lift_profile: ValveLiftProfileDefinition,
     pub discharge_coefficient: f64,
 }
 
@@ -232,6 +235,60 @@ fn default_opening_ramp_fraction() -> f64 {
 
 fn default_plateau_fraction() -> f64 {
     0.0
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct ValveLiftProfileDefinition {
+    #[serde(default)]
+    pub model: ValveLiftProfileModel,
+    /// Lift at the end of the ramp segment as a fraction of maximum valve lift.
+    #[serde(default = "default_segmented_ramp_lift_fraction")]
+    pub ramp_lift_fraction: f64,
+    /// One ramp-up/down segment duration as a fraction of total open duration.
+    #[serde(default = "default_segmented_ramp_duration_fraction")]
+    pub ramp_duration_fraction: f64,
+    /// One main-lift-up/down segment duration as a fraction of total open duration.
+    #[serde(default = "default_segmented_main_duration_fraction")]
+    pub main_lift_duration_fraction: f64,
+    /// Full-lift dwell duration as a fraction of total open duration.
+    #[serde(default = "default_segmented_dwell_fraction")]
+    pub dwell_duration_fraction: f64,
+}
+
+impl Default for ValveLiftProfileDefinition {
+    fn default() -> Self {
+        Self {
+            model: ValveLiftProfileModel::LegacyCosine,
+            ramp_lift_fraction: default_segmented_ramp_lift_fraction(),
+            ramp_duration_fraction: default_segmented_ramp_duration_fraction(),
+            main_lift_duration_fraction: default_segmented_main_duration_fraction(),
+            dwell_duration_fraction: default_segmented_dwell_fraction(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ValveLiftProfileModel {
+    #[default]
+    LegacyCosine,
+    SegmentedCubic,
+}
+
+fn default_segmented_ramp_lift_fraction() -> f64 {
+    0.25
+}
+
+fn default_segmented_ramp_duration_fraction() -> f64 {
+    0.10
+}
+
+fn default_segmented_main_duration_fraction() -> f64 {
+    0.35
+}
+
+fn default_segmented_dwell_fraction() -> f64 {
+    0.10
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

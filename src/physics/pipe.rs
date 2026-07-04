@@ -818,7 +818,10 @@ mod tests {
         // High-pressure, fast primary drives flow into the collector.
         let forward =
             pipe_to_pipe_interface_flux(high, primary_geom, low, collector_geom, properties());
-        assert!(forward.mass_kg_per_s > 0.0, "flow should go primary -> collector");
+        assert!(
+            forward.mass_kg_per_s > 0.0,
+            "flow should go primary -> collector"
+        );
 
         // Reversing the operands reverses the sign (antisymmetry => conservation
         // when applied equal-and-opposite to the two ends).

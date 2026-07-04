@@ -512,11 +512,7 @@ fn single_cylinder_pressure_work_and_torque_regression_features_match_baseline()
                 1104195.2150,
                 Tolerance::combined(500.0, 0.02),
             ),
-            ScalarBaseline::new(
-                "indicated_work_j",
-                252.8983,
-                Tolerance::combined(0.5, 0.03),
-            ),
+            ScalarBaseline::new("indicated_work_j", 252.8983, Tolerance::combined(0.5, 0.03)),
             ScalarBaseline::new(
                 "mean_indicated_torque_nm",
                 10.0625,
@@ -854,8 +850,3 @@ fn renamed_pipe_grid_preserves_cell_geometry() {
         1.0e-12,
     );
 }
-
-
-
-
-

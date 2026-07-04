@@ -492,7 +492,8 @@ mod tests {
             minimum_mass_kg: 1.0e-9,
             minimum_temperature_k: 1.0,
         };
-        let initial_properties = crate::physics::chamber::mixture_chamber_properties(species, fallback);
+        let initial_properties =
+            crate::physics::chamber::mixture_chamber_properties(species, fallback);
         let initial_pressure = crate::physics::gas::pressure(
             species.total_mass_kg(),
             temperature_k,
@@ -503,7 +504,8 @@ mod tests {
             crate::physics::chamber::species_internal_energy_j(species, temperature_k, fallback);
 
         let conversion = burn_species(&mut species, 0.0001, 14.7, 44.0e6, 1.0, 0.0);
-        let updated_properties = crate::physics::chamber::mixture_chamber_properties(species, fallback);
+        let updated_properties =
+            crate::physics::chamber::mixture_chamber_properties(species, fallback);
         let updated_temperature = (initial_energy + conversion.released_heat_j)
             / (species.total_mass_kg()
                 * crate::physics::gas::cv(

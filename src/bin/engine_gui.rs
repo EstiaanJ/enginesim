@@ -229,8 +229,7 @@ impl RealtimeAudio {
                 .intake_filter
                 .process((intake_rel / AUDIO_PRESSURE_SCALE_PA) as f32)
                 .tanh();
-            let sample =
-                (exhaust * self.exhaust_gain + intake * self.intake_gain).clamp(-1.0, 1.0);
+            let sample = (exhaust * self.exhaust_gain + intake * self.intake_gain).clamp(-1.0, 1.0);
             if let Some(producer) = self.producer.as_mut() {
                 // Wait-free push; drop on overrun (rate control keeps this rare).
                 let _ = producer.push(sample);

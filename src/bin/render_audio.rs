@@ -138,7 +138,10 @@ fn render_average_cycle(definition: &EngineDefinition, args: &Args) -> AveragedC
     let relative_pa = fill_and_average(&sum_pa, &count);
     let peak_abs_pa = relative_pa.iter().fold(0.0f64, |m, &v| m.max(v.abs()));
     let min = relative_pa.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = relative_pa.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let max = relative_pa
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
 
     AveragedCycle {
         relative_pa,
@@ -209,8 +212,8 @@ fn synthesize_wav_samples(averaged: &AveragedCycle, args: &Args) -> Vec<i16> {
         let low = position.floor() as usize % bins;
         let high = (low + 1) % bins;
         let fraction = position - position.floor();
-        let interpolated = averaged.relative_pa[low] * (1.0 - fraction)
-            + averaged.relative_pa[high] * fraction;
+        let interpolated =
+            averaged.relative_pa[low] * (1.0 - fraction) + averaged.relative_pa[high] * fraction;
         let normalized = ((interpolated - mean) * scale).clamp(-1.0, 1.0);
         samples.push((normalized * i16::MAX as f64) as i16);
     }

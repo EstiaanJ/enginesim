@@ -1,6 +1,6 @@
 # Requested Features
 
-
+Status note: the tuning GUI described below is implemented as `src/bin/tuning_gui.rs`, backed by `src/tuning.rs::TuningSession` (draft/committed config with "Write Changes"/"Undo Changes") and `src/engine_handling.rs::EngineHandlingDefinition` (the sim-handling JSON split from the engine JSON, including `set_points_rpm`). 1D pipe geometry uses `total_length_m`/`number_of_cells` (`src/engine_config.rs`). The requirements below are kept as the original spec/rationale rather than rewritten, since the implementation still tracks them closely; treat unchecked-sounding items (e.g. per-cylinder MAP override behavior at extreme values, full input-box coverage for every listed parameter) as worth spot-checking against the current GUI rather than assumed complete.
 
 # Tuning GUI
 This will be a GUI for tuning engine performance and various aspects of the engine.

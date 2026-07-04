@@ -599,8 +599,7 @@ mod rk4_tests {
         let volume_rate = (v2 - v1) / dt; // constant dV/dt for V linear in time
         let volume_at = |fraction: f64| (v1 + (v2 - v1) * fraction, volume_rate);
 
-        let u2_rk4 =
-            integrate_internal_energy_rk4(u1, 0.0, 0.0, gamma, dt, volume_at);
+        let u2_rk4 = integrate_internal_energy_rk4(u1, 0.0, 0.0, gamma, dt, volume_at);
         let u2_analytic = u1 * (v1 / v2).powf(gamma - 1.0);
         // A single explicit-Euler step (start pressure only) for comparison.
         let u2_euler = u1 - (gamma - 1.0) * u1 / v1 * volume_rate * dt;

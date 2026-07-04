@@ -26,12 +26,12 @@ use enginesim::engine_loader::{
 };
 use enginesim::profiles::SimulationProfile;
 use enginesim::single_cylinder::{SingleCylinderEngine, rad_per_s_to_rpm, spark_angle_deg_for_rpm};
-use enginesim::valve::ValveEvent;
 use enginesim::telemetry::{
     EngineControls, EngineFrameTelemetry, MAP_OVERRIDE_MAX_PA, TelemetryAggregator,
     TelemetryAvailability, TelemetryScalar, default_profile_for_gui,
 };
 use enginesim::tuning::{TuningSession, area_m2_from_diameter_mm, diameter_mm_from_area_m2};
+use enginesim::valve::ValveEvent;
 
 const ENGINE_CYCLE_DEG: f64 = 720.0;
 

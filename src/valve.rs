@@ -1,4 +1,4 @@
-use crate::engine_config::ValveDefinition;
+use crate::engine_config::{ValveDefinition, ValveLiftProfileDefinition, ValveLiftProfileModel};
 
 pub const ENGINE_CYCLE_RADIANS: f64 = std::f64::consts::TAU * 2.0;
 
@@ -13,6 +13,7 @@ pub struct ValveEvent {
     pub opening_ramp_fraction: f64,
     /// Fraction of the open duration held at full lift between the ramps.
     pub plateau_fraction: f64,
+    pub lift_profile: ValveLiftProfileDefinition,
     pub discharge_coefficient: f64,
 }
 
@@ -26,6 +27,7 @@ impl ValveEvent {
             valve_count: definition.valve_count,
             opening_ramp_fraction: definition.opening_ramp_fraction,
             plateau_fraction: definition.plateau_fraction,
+            lift_profile: definition.lift_profile,
             discharge_coefficient: definition.discharge_coefficient,
         }
     }
@@ -52,6 +54,10 @@ impl ValveEvent {
         }
 
         let progress = (elapsed / duration).clamp(0.0, 1.0);
+        if self.lift_profile.model == ValveLiftProfileModel::SegmentedCubic {
+            return segmented_cubic_lift_fraction(progress, self.lift_profile);
+        }
+
         let opening = self.opening_ramp_fraction.clamp(1.0e-6, 1.0);
         let plateau = self.plateau_fraction.clamp(0.0, 1.0 - opening);
         let closing = (1.0 - opening - plateau).max(0.0);
@@ -75,8 +81,7 @@ impl ValveEvent {
     pub fn peak_effective_area_m2(self) -> f64 {
         let curtain_area_m2 =
             std::f64::consts::PI * self.valve_diameter_m.max(0.0) * self.max_lift_m.max(0.0);
-        let port_area_m2 =
-            std::f64::consts::FRAC_PI_4 * self.valve_diameter_m.max(0.0).powi(2);
+        let port_area_m2 = std::f64::consts::FRAC_PI_4 * self.valve_diameter_m.max(0.0).powi(2);
         self.valve_count.max(1) as f64 * curtain_area_m2.min(port_area_m2)
     }
 
@@ -86,10 +91,63 @@ impl ValveEvent {
     pub fn effective_area_m2(self, crank_angle_rad: f64) -> f64 {
         let lift_m = self.max_lift_m.max(0.0) * self.lift_fraction(crank_angle_rad);
         let curtain_area_m2 = std::f64::consts::PI * self.valve_diameter_m.max(0.0) * lift_m;
-        let port_area_m2 =
-            std::f64::consts::FRAC_PI_4 * self.valve_diameter_m.max(0.0).powi(2);
+        let port_area_m2 = std::f64::consts::FRAC_PI_4 * self.valve_diameter_m.max(0.0).powi(2);
         self.valve_count.max(1) as f64 * curtain_area_m2.min(port_area_m2)
     }
+}
+
+pub fn segmented_cubic_lift_fraction(progress: f64, profile: ValveLiftProfileDefinition) -> f64 {
+    let progress = progress.clamp(0.0, 1.0);
+    let ramp_lift = profile.ramp_lift_fraction.clamp(0.0, 1.0);
+    let (ramp_duration, main_duration, dwell_duration) = normalized_segment_fractions(profile);
+
+    let ramp_end = ramp_duration;
+    let main_up_end = ramp_end + main_duration;
+    let dwell_end = main_up_end + dwell_duration;
+    let main_down_end = dwell_end + main_duration;
+
+    if ramp_duration > 0.0 && progress <= ramp_end {
+        let theta_s = progress / ramp_duration;
+        ramp_lift * ramp_specific_lift(theta_s)
+    } else if main_duration > 0.0 && progress <= main_up_end {
+        let theta_s = (progress - ramp_end) / main_duration;
+        ramp_lift + main_specific_lift(theta_s) * (1.0 - ramp_lift)
+    } else if dwell_duration > 0.0 && progress <= dwell_end {
+        1.0
+    } else if main_duration > 0.0 && progress <= main_down_end {
+        let theta_s = (main_down_end - progress) / main_duration;
+        ramp_lift + main_specific_lift(theta_s) * (1.0 - ramp_lift)
+    } else if ramp_duration > 0.0 {
+        let theta_s = (1.0 - progress) / ramp_duration;
+        ramp_lift * ramp_specific_lift(theta_s)
+    } else {
+        0.0
+    }
+    .clamp(0.0, 1.0)
+}
+
+pub fn normalized_segment_fractions(profile: ValveLiftProfileDefinition) -> (f64, f64, f64) {
+    let ramp = profile.ramp_duration_fraction.max(0.0);
+    let main = profile.main_lift_duration_fraction.max(0.0);
+    let dwell = profile.dwell_duration_fraction.max(0.0);
+    let total = 2.0 * ramp + 2.0 * main + dwell;
+    if total <= 0.0 {
+        return (0.5, 0.0, 0.0);
+    }
+    (ramp / total, main / total, dwell / total)
+}
+
+/// Third-order specific ramp lift. This is the lower curve from the design
+/// reference: flat at valve opening, steepening into the main-lift segment.
+pub fn ramp_specific_lift(theta_s: f64) -> f64 {
+    theta_s.clamp(0.0, 1.0).powi(3)
+}
+
+/// Third-order specific main lift. It starts with the same normalized slope as
+/// `ramp_specific_lift` ends with, and eases to zero slope at full lift.
+pub fn main_specific_lift(theta_s: f64) -> f64 {
+    let theta_s = theta_s.clamp(0.0, 1.0);
+    3.0 * theta_s - 3.0 * theta_s.powi(2) + theta_s.powi(3)
 }
 
 pub fn normalize_cycle_angle_rad(angle_rad: f64) -> f64 {
@@ -139,6 +197,7 @@ mod tests {
             valve_count: 1,
             opening_ramp_fraction: 0.5,
             plateau_fraction: 0.0,
+            lift_profile: ValveLiftProfileDefinition::default(),
             discharge_coefficient: 0.7,
         }
     }
@@ -245,5 +304,46 @@ mod tests {
             110.0_f64.to_radians(),
             120.0_f64.to_radians(),
         ));
+    }
+
+    #[test]
+    fn segmented_cubic_profile_is_symmetric_and_reaches_full_lift() {
+        let profile = ValveLiftProfileDefinition {
+            model: ValveLiftProfileModel::SegmentedCubic,
+            ramp_lift_fraction: 0.2,
+            ramp_duration_fraction: 20.0,
+            main_lift_duration_fraction: 70.0,
+            dwell_duration_fraction: 30.0,
+        };
+
+        assert_approx_eq(segmented_cubic_lift_fraction(0.0, profile), 0.0);
+        assert_approx_eq(segmented_cubic_lift_fraction(1.0, profile), 0.0);
+        assert_approx_eq(segmented_cubic_lift_fraction(0.5, profile), 1.0);
+        for &progress in &[0.05, 0.17, 0.31, 0.44] {
+            assert_approx_eq(
+                segmented_cubic_lift_fraction(progress, profile),
+                segmented_cubic_lift_fraction(1.0 - progress, profile),
+            );
+        }
+    }
+
+    #[test]
+    fn segmented_cubic_valve_uses_absolute_crank_angles_in_radians() {
+        let event = ValveEvent {
+            open_angle_rad: 350.0_f64.to_radians(),
+            close_angle_rad: 590.0_f64.to_radians(),
+            lift_profile: ValveLiftProfileDefinition {
+                model: ValveLiftProfileModel::SegmentedCubic,
+                ramp_lift_fraction: 0.25,
+                ramp_duration_fraction: 20.0,
+                main_lift_duration_fraction: 80.0,
+                dwell_duration_fraction: 40.0,
+            },
+            ..valve()
+        };
+
+        assert_approx_eq(event.lift_fraction(350.0_f64.to_radians()), 0.0);
+        assert_approx_eq(event.lift_fraction(470.0_f64.to_radians()), 1.0);
+        assert_approx_eq(event.lift_fraction(590.0_f64.to_radians()), 0.0);
     }
 }

@@ -14,12 +14,8 @@ use crate::physics::chamber::{
     DRY_AIR_OXYGEN_MASS_FRACTION, chamber_pressure_pa, integrate_internal_energy_rk4,
     mixture_chamber_properties, species_internal_energy_j,
 };
-use crate::physics::flow::GasFlowProperties;
 use crate::physics::gas::cv;
-use crate::physics::pipe::{
-    Pipe1D, PipeBoundary, PipeBoundaryFlux, PipeCellGeometry, PlenumState, ThrottlePlenumInput,
-    apply_boundary_flux_to_cell, pipe_cell_to_chamber_orifice_flux, pipe_to_pipe_interface_flux,
-};
+use crate::physics::pipe::{PipeBoundaryFlux, PlenumState, ThrottlePlenumInput};
 use crate::profiles::SimulationProfile;
 use crate::simulation::{StepContext, StepModel};
 use crate::throttle;
@@ -27,8 +23,84 @@ use crate::valve::{
     ENGINE_CYCLE_RADIANS, ValveEvent, crossed_cycle_angle_rad, normalize_cycle_angle_rad,
     positive_cycle_delta_rad,
 };
+use onedpipes::{
+    DuctConfig, DuctEnd, ExternalBoundaryControl, ExternalBoundaryId, GasProperties, Model,
+    ModelBoundary, PipeEnd, PipeId, SpeciesFractions, SpeciesMass, State as PipeState,
+    TemperatureDependentAir, ValveOrifice,
+};
 
 const LOW_SPEED_FUELING_FALLBACK_RPM: f64 = 500.0;
+const INTAKE_PLENUM_EXTERNAL_ID: usize = 0;
+const INTAKE_VALVE_EXTERNAL_ID: usize = 1;
+const EXHAUST_VALVE_EXTERNAL_ID: usize = 2;
+
+#[derive(Debug, Clone)]
+struct OneDPipeNetwork {
+    gas: TemperatureDependentAir,
+    model: Model<TemperatureDependentAir>,
+    intake_runner: PipeId,
+    exhaust_runner: PipeId,
+    exhaust_collector: Option<PipeId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EnginePipeFlow {
+    mass_kg_per_s: f64,
+    energy_w: f64,
+}
+
+impl EnginePipeFlow {
+    fn zero() -> Self {
+        Self {
+            mass_kg_per_s: 0.0,
+            energy_w: 0.0,
+        }
+    }
+}
+
+/// One external boundary of the pipe network for a macro step. The external
+/// (chamber/plenum) state is frozen for the step; the orifice flow against it
+/// is re-evaluated from the live pipe state every solver substep so a blowdown
+/// pulse decays naturally as the boundary cell fills instead of a stale
+/// start-of-step rate being forced in for the whole step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EnginePipeBoundaryRequest {
+    pipe_id: PipeId,
+    end: DuctEnd,
+    external_state: PipeState,
+    flow_area_m2: f64,
+    inflow_species: SpeciesFractions,
+    /// Fraction of the boundary cell's current mass that may transfer per substep.
+    cell_fraction: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct AcceptedPipeTransfer {
+    mass_kg: f64,
+    energy_j: f64,
+    species_kg: SpeciesMass,
+}
+
+impl AcceptedPipeTransfer {
+    fn absorb(&mut self, other: Self) {
+        self.mass_kg += other.mass_kg;
+        self.energy_j += other.energy_j;
+        self.species_kg = self.species_kg.add_scaled(other.species_kg, 1.0);
+    }
+
+    fn into_flux(self, timestep_seconds: f64) -> PipeBoundaryFlux {
+        if timestep_seconds <= 0.0 {
+            return PipeBoundaryFlux::zero();
+        }
+
+        PipeBoundaryFlux {
+            mass_kg_per_s: self.mass_kg / timestep_seconds,
+            momentum_n: 0.0,
+            energy_w: self.energy_j / timestep_seconds,
+            species_kg_per_s: species_mass_to_chamber_species(self.species_kg, timestep_seconds),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SingleCylinderEngine {
@@ -37,12 +109,7 @@ pub struct SingleCylinderEngine {
     chamber_state: ChamberState,
     chamber_species: ChamberSpeciesMasses,
     intake_plenum: PlenumState,
-    intake_pipe: Pipe1D,
-    exhaust_pipe: Pipe1D,
-    /// Optional tailpipe downstream of the exhaust primary, joined to it by a
-    /// momentum-preserving area-change interface. `None` reproduces the
-    /// original single-pipe exhaust.
-    exhaust_collector: Option<Pipe1D>,
+    pipes: OneDPipeNetwork,
     crank_angle_rad: f64,
     crank_speed_rad_per_s: f64,
     pending_combustion: Option<PendingCombustion>,
@@ -239,9 +306,7 @@ impl SingleCylinderEngine {
         );
         let chamber_species = ChamberSpeciesMasses::from_dry_air_mass(chamber_state.mass_kg);
         let intake_plenum = default_intake_plenum(&definition);
-        let intake_pipe = default_intake_pipe(&definition);
-        let exhaust_pipe = default_exhaust_pipe(&definition);
-        let exhaust_collector = default_exhaust_collector(&definition);
+        let pipes = default_pipe_network(&definition);
 
         Self {
             definition,
@@ -249,9 +314,7 @@ impl SingleCylinderEngine {
             chamber_state,
             chamber_species,
             intake_plenum,
-            intake_pipe,
-            exhaust_pipe,
-            exhaust_collector,
+            pipes,
             crank_angle_rad: normalize_cycle_angle_rad(crank_angle_rad),
             crank_speed_rad_per_s,
             pending_combustion: None,
@@ -267,45 +330,6 @@ impl SingleCylinderEngine {
             elapsed_time_seconds: 0.0,
             over_temperature_warning_emitted: false,
         }
-    }
-
-    /// Couple the exhaust primary's far end to the collector tailpipe across a
-    /// momentum-preserving area-change interface (the two symmetric GN250
-    /// primaries reduce to one primary feeding a wider single exhaust). No-op
-    /// when the engine has no collector. The equal-and-opposite interface flux
-    /// conserves mass/energy and, crucially, carries the exhaust column's
-    /// momentum through the expansion so blowdown is not artificially throttled.
-    fn step_exhaust_collector(&mut self, timestep_seconds: f64) {
-        let pipe_props = pipe_properties(&self.definition);
-        let Some(collector) = self.exhaust_collector.as_mut() else {
-            return;
-        };
-
-        let primary_cell = *self
-            .exhaust_pipe
-            .cells
-            .last()
-            .expect("exhaust primary should have at least one cell");
-        let collector_cell = collector.cells[0];
-        let interface_flux = pipe_to_pipe_interface_flux(
-            primary_cell,
-            self.exhaust_pipe.geometry,
-            collector_cell,
-            collector.geometry,
-            pipe_props,
-        );
-
-        // Positive interface flux flows primary -> collector: the primary loses
-        // it, the collector gains it.
-        apply_boundary_flux_to_cell(&mut collector.cells[0], interface_flux, timestep_seconds);
-        apply_boundary_flux_to_cell(
-            self.exhaust_pipe
-                .cells
-                .last_mut()
-                .expect("exhaust primary should have at least one cell"),
-            interface_flux.scaled(-1.0),
-            timestep_seconds,
-        );
     }
 
     pub fn definition(&self) -> &EngineDefinition {
@@ -481,38 +505,6 @@ impl SingleCylinderEngine {
                 plenum_fallback_properties,
             );
         }
-        step_pipe_stable(
-            &mut self.intake_pipe,
-            PipeBoundary::Closed,
-            PipeBoundary::Closed,
-            timestep_seconds,
-        );
-        let open_exhaust_boundary = PipeBoundary::OpenPressure {
-            pressure_pa: self.definition.boundaries.exhaust_pressure_pa,
-            temperature_k: self.definition.boundaries.exhaust_temperature_k,
-        };
-        // With a collector the primary's far end joins the lumped junction
-        // (closed wall here; the junction flux is applied separately below);
-        // without one it vents straight to the open boundary as before.
-        let primary_far_boundary = if self.exhaust_collector.is_some() {
-            PipeBoundary::Closed
-        } else {
-            open_exhaust_boundary
-        };
-        step_pipe_stable(
-            &mut self.exhaust_pipe,
-            PipeBoundary::Closed,
-            primary_far_boundary,
-            timestep_seconds,
-        );
-        if let Some(collector) = self.exhaust_collector.as_mut() {
-            step_pipe_stable(
-                collector,
-                PipeBoundary::Closed,
-                open_exhaust_boundary,
-                timestep_seconds,
-            );
-        }
         let combustion_step = self.combustion_step_result(
             start_angle_rad,
             end_angle_rad,
@@ -528,25 +520,61 @@ impl SingleCylinderEngine {
         );
         let combustion_heat_added_j = combustion_step.heat_added_j;
         self.sync_chamber_mass_from_species();
-        let pipe_properties = pipe_properties(&self.definition);
         let plenum_pressure_pa = self.intake_plenum.pressure_pa(plenum_fallback_properties);
-        let mut plenum_to_runner_flux = pipe_cell_to_chamber_orifice_flux(
-            self.intake_pipe.cells[0],
+        let plenum_state = pipe_state_from_pressure_temperature(
             plenum_pressure_pa,
             self.intake_plenum.chamber_state.temperature_k,
-            self.intake_pipe.geometry,
-            self.intake_pipe.geometry.area_m2,
-            pipe_properties,
+            self.pipes.gas,
         );
-        plenum_to_runner_flux = flux_with_chamber_species_for_outflow(
-            plenum_to_runner_flux,
-            self.intake_plenum.species,
+        let chamber_pipe_state = pipe_state_from_pressure_temperature(
+            start_pressure_pa,
+            self.chamber_state.temperature_k,
+            self.pipes.gas,
         );
-        apply_boundary_flux_to_cell(
-            &mut self.intake_pipe.cells[0],
-            plenum_to_runner_flux.scaled(-1.0),
+        let chamber_props = chamber_properties(&self.definition);
+        // Donor budgets: how much mass each external volume may supply into
+        // the pipes over this step without dropping below its minimum. The
+        // chamber budget is shared by the intake and exhaust valve boundaries.
+        let plenum_donor_budget_kg = (self.intake_plenum.species.total_mass_kg()
+            - plenum_fallback_properties.minimum_mass_kg)
+            .max(0.0);
+        let chamber_donor_budget_kg =
+            (self.chamber_species.total_mass_kg() - chamber_props.minimum_mass_kg).max(0.0);
+
+        let accepted_transfers = self.pipes.step_stable(
             timestep_seconds,
+            self.pipes.boundary_request(
+                self.pipes.intake_runner,
+                DuctEnd::Left,
+                plenum_state,
+                self.pipes.pipe_area_m2(self.pipes.intake_runner),
+                chamber_species_to_pipe_fractions(self.intake_plenum.species),
+                0.5,
+            ),
+            self.pipes.boundary_request(
+                self.pipes.intake_runner,
+                DuctEnd::Right,
+                chamber_pipe_state,
+                intake_area_m2 * intake_valve.discharge_coefficient.clamp(0.0, 1.0),
+                chamber_species_to_pipe_fractions(self.chamber_species),
+                0.5,
+            ),
+            self.pipes.boundary_request(
+                self.pipes.exhaust_runner,
+                DuctEnd::Left,
+                chamber_pipe_state,
+                exhaust_area_m2 * exhaust_valve.discharge_coefficient.clamp(0.0, 1.0),
+                chamber_species_to_pipe_fractions(self.chamber_species),
+                0.5,
+            ),
+            plenum_donor_budget_kg,
+            chamber_donor_budget_kg,
         );
+        let [plenum_transfer, intake_transfer, exhaust_transfer] = accepted_transfers;
+        let plenum_to_runner_flux = plenum_transfer.into_flux(timestep_seconds);
+        let intake_flux = intake_transfer.into_flux(timestep_seconds);
+        let exhaust_flux = exhaust_transfer.into_flux(timestep_seconds);
+
         let plenum_volume_m3 = self.intake_plenum.volume_m3;
         self.intake_plenum.chamber_state = step_chamber_with_pipe_fluxes(
             &mut self.intake_plenum.species,
@@ -559,45 +587,6 @@ impl SingleCylinderEngine {
             // linear integration of the constant flux/heat rates.
             |_| (plenum_volume_m3, 0.0),
         );
-        let mut intake_flux = pipe_cell_to_chamber_orifice_flux(
-            *self
-                .intake_pipe
-                .cells
-                .last()
-                .expect("intake pipe should have at least one cell"),
-            start_pressure_pa,
-            self.chamber_state.temperature_k,
-            self.intake_pipe.geometry,
-            intake_area_m2 * intake_valve.discharge_coefficient.clamp(0.0, 1.0),
-            pipe_properties,
-        );
-        let mut exhaust_flux = pipe_cell_to_chamber_orifice_flux(
-            self.exhaust_pipe.cells[0],
-            start_pressure_pa,
-            self.chamber_state.temperature_k,
-            self.exhaust_pipe.geometry,
-            exhaust_area_m2 * exhaust_valve.discharge_coefficient.clamp(0.0, 1.0),
-            pipe_properties,
-        );
-        intake_flux = flux_with_chamber_species_for_outflow(intake_flux, self.chamber_species);
-        exhaust_flux = flux_with_chamber_species_for_outflow(exhaust_flux, self.chamber_species);
-
-        apply_boundary_flux_to_cell(
-            self.intake_pipe
-                .cells
-                .last_mut()
-                .expect("intake pipe should have at least one cell"),
-            intake_flux.scaled(-1.0),
-            timestep_seconds,
-        );
-        apply_boundary_flux_to_cell(
-            &mut self.exhaust_pipe.cells[0],
-            exhaust_flux.scaled(-1.0),
-            timestep_seconds,
-        );
-        // Couple the exhaust primary to the tailpipe across the area-change
-        // interface (no-op when no collector is configured).
-        self.step_exhaust_collector(timestep_seconds);
         let intake_species_flow_kg_per_s = intake_flux.species_kg_per_s;
         let exhaust_species_flow_kg_per_s =
             scaled_species_flow(exhaust_flux.species_kg_per_s, -1.0);
@@ -700,26 +689,18 @@ impl SingleCylinderEngine {
             ),
             intake_plenum_pressure_pa: self.intake_plenum.pressure_pa(plenum_fallback_properties),
             intake_runner_pressure_pa: self
-                .intake_pipe
-                .cells
-                .last()
-                .expect("intake pipe should have at least one cell")
-                .pressure_pa(self.intake_pipe.geometry, pipe_properties),
-            exhaust_runner_pressure_pa: self.exhaust_pipe.cells[0]
-                .pressure_pa(self.exhaust_pipe.geometry, pipe_properties),
-            exhaust_collector_pressure_pa: self.exhaust_collector.as_ref().map(|collector| {
-                collector.cells[0].pressure_pa(collector.geometry, pipe_properties)
-            }),
-            exhaust_exit_pressure_pa: {
-                // The true open-boundary exit is the collector's far cell when a
-                // collector is present, otherwise the exhaust primary's far cell.
-                let exit_pipe = self.exhaust_collector.as_ref().unwrap_or(&self.exhaust_pipe);
-                exit_pipe
-                    .cells
-                    .last()
-                    .expect("exhaust pipe should have at least one cell")
-                    .pressure_pa(exit_pipe.geometry, pipe_properties)
-            },
+                .pipes
+                .pipe_end_primitive(self.pipes.intake_runner, DuctEnd::Right)
+                .p,
+            exhaust_runner_pressure_pa: self
+                .pipes
+                .pipe_end_primitive(self.pipes.exhaust_runner, DuctEnd::Left)
+                .p,
+            exhaust_collector_pressure_pa: self
+                .pipes
+                .exhaust_collector
+                .map(|collector| self.pipes.pipe_end_primitive(collector, DuctEnd::Left).p),
+            exhaust_exit_pressure_pa: self.pipes.exhaust_exit_pressure_pa(),
             intake_effective_area_m2: intake_area_m2,
             exhaust_effective_area_m2: exhaust_area_m2,
             intake_mass_flow_kg_per_s: intake_flux.mass_kg_per_s,
@@ -731,16 +712,15 @@ impl SingleCylinderEngine {
             oxygen_consumed_kg: combustion_step.oxygen_consumed_kg,
             products_generated_kg: combustion_step.products_generated_kg,
             species_budget,
-            exhaust_lambda: exhaust_lambda_from_species(
-                // Sample the runner cell at the exhaust port (where the gas
-                // actually leaves the cylinder), not the open tailpipe end,
-                // which fills with ambient air between exhaust pulses and would
-                // read as an implausibly lean mixture.
-                self.exhaust_pipe
-                    .cells
-                    .first()
-                    .expect("exhaust pipe should have at least one cell")
-                    .species,
+            // Exhaust gas is almost entirely combustion products, so lambda
+            // must use the combustion-invariant reconstruction (split products
+            // back into the air and fuel that formed them) rather than reading
+            // the near-zero leftover fuel fraction directly.
+            exhaust_lambda: pipe_fractions_to_chamber_species(
+                self.pipes
+                    .pipe_end_species(self.pipes.exhaust_runner, DuctEnd::Left),
+            )
+            .lambda(
                 self.definition
                     .combustion
                     .mixture_limits
@@ -1240,20 +1220,6 @@ fn default_runner_profile() -> SimulationProfile {
     EngineHandlingDefinition::default().to_profile()
 }
 
-fn default_intake_pipe(definition: &EngineDefinition) -> Pipe1D {
-    let pipe = definition.intake_exhaust.intake_runner;
-    Pipe1D::uniform(
-        pipe.number_of_cells.max(1),
-        PipeCellGeometry {
-            length_m: pipe.cell_length_m().max(1.0e-4),
-            area_m2: pipe.area_m2.max(1.0e-6),
-        },
-        pipe_properties(definition),
-        definition.boundaries.intake_pressure_pa,
-        definition.boundaries.intake_temperature_k,
-    )
-}
-
 fn default_intake_plenum(definition: &EngineDefinition) -> PlenumState {
     PlenumState::from_pressure_temperature(
         definition.boundaries.intake_pressure_pa,
@@ -1266,61 +1232,348 @@ fn default_intake_plenum(definition: &EngineDefinition) -> PlenumState {
     )
 }
 
-fn default_exhaust_pipe(definition: &EngineDefinition) -> Pipe1D {
-    let pipe = definition.intake_exhaust.exhaust_runner;
-    Pipe1D::uniform(
-        pipe.number_of_cells.max(1),
-        PipeCellGeometry {
-            length_m: pipe.cell_length_m().max(1.0e-4),
-            area_m2: pipe.area_m2.max(1.0e-6),
-        },
-        pipe_properties(definition),
+fn default_pipe_network(definition: &EngineDefinition) -> OneDPipeNetwork {
+    let gas = TemperatureDependentAir::new();
+    let mut model = Model::new(0.5);
+    let intake = definition.intake_exhaust.intake_runner;
+    let exhaust = definition.intake_exhaust.exhaust_runner;
+    let intake_initial = pipe_state_from_pressure_temperature(
+        definition.boundaries.intake_pressure_pa,
+        definition.boundaries.intake_temperature_k,
+        gas,
+    );
+    let exhaust_initial = pipe_state_from_pressure_temperature(
         definition.boundaries.exhaust_pressure_pa,
         definition.boundaries.exhaust_temperature_k,
+        gas,
+    );
+    let intake_runner = model.add_uniform_duct_with_species(
+        gas,
+        duct_config(intake),
+        intake_initial,
+        SpeciesFractions::AIR,
+        ModelBoundary::external(INTAKE_PLENUM_EXTERNAL_ID),
+        ModelBoundary::external(INTAKE_VALVE_EXTERNAL_ID),
+    );
+    let exhaust_right_boundary = if definition.intake_exhaust.exhaust_collector.is_some() {
+        ModelBoundary::junction(0)
+    } else {
+        ModelBoundary::open(definition.boundaries.exhaust_pressure_pa)
+    };
+    let exhaust_runner = model.add_uniform_duct_with_species(
+        gas,
+        duct_config(exhaust),
+        exhaust_initial,
+        SpeciesFractions::EXHAUST,
+        ModelBoundary::external(EXHAUST_VALVE_EXTERNAL_ID),
+        exhaust_right_boundary,
+    );
+    let exhaust_collector = definition
+        .intake_exhaust
+        .exhaust_collector
+        .map(|collector| {
+            model.add_uniform_duct_with_species(
+                gas,
+                duct_config(collector),
+                exhaust_initial,
+                SpeciesFractions::EXHAUST,
+                ModelBoundary::junction(0),
+                ModelBoundary::open(definition.boundaries.exhaust_pressure_pa),
+            )
+        });
+
+    OneDPipeNetwork {
+        gas,
+        model,
+        intake_runner,
+        exhaust_runner,
+        exhaust_collector,
+    }
+}
+
+/// onedpipes' finite-volume reconstruction needs at least this many cells
+/// (`DuctConfig::new` asserts `cells >= 4`), so coarser configurations are
+/// promoted rather than allowed to panic.
+const MIN_DUCT_CELLS: usize = 4;
+/// Per-cell length floor, carried over from the old `Pipe1D` construction.
+const MIN_DUCT_CELL_LENGTH_M: f64 = 1.0e-4;
+
+fn duct_config(pipe: crate::engine_config::PipeDefinition) -> DuctConfig {
+    let cells = pipe.number_of_cells.max(MIN_DUCT_CELLS);
+    DuctConfig::new(
+        pipe.total_length_m
+            .max(cells as f64 * MIN_DUCT_CELL_LENGTH_M),
+        cells,
+        pipe.area_m2.max(1.0e-6),
     )
 }
 
-fn default_exhaust_collector(definition: &EngineDefinition) -> Option<Pipe1D> {
-    let collector = definition.intake_exhaust.exhaust_collector?;
-    Some(Pipe1D::uniform(
-        collector.number_of_cells.max(1),
-        PipeCellGeometry {
-            length_m: collector.cell_length_m().max(1.0e-4),
-            area_m2: collector.area_m2.max(1.0e-6),
-        },
-        pipe_properties(definition),
-        definition.boundaries.exhaust_pressure_pa,
-        definition.boundaries.exhaust_temperature_k,
-    ))
-}
-
-fn pipe_properties(definition: &EngineDefinition) -> GasFlowProperties {
-    GasFlowProperties {
-        specific_heat_ratio: definition.gas.specific_heat_ratio,
-        gas_constant_j_per_kg_k: definition.gas.gas_constant_j_per_kg_k,
-    }
-}
-
-fn step_pipe_stable(
-    pipe: &mut Pipe1D,
-    left_boundary: PipeBoundary,
-    right_boundary: PipeBoundary,
-    timestep_seconds: f64,
-) {
-    if timestep_seconds <= 0.0 {
-        return;
+impl OneDPipeNetwork {
+    fn pipe_area_m2(&self, pipe_id: PipeId) -> f64 {
+        self.model.pipe(pipe_id).config().area
     }
 
-    let mut remaining_seconds = timestep_seconds;
-    while remaining_seconds > f64::EPSILON {
-        let max_timestep_seconds = pipe.max_stable_timestep_seconds(0.5);
-        let substep_seconds = if max_timestep_seconds.is_finite() && max_timestep_seconds > 0.0 {
-            remaining_seconds.min(max_timestep_seconds)
+    fn pipe_end_cell_mass_kg(&self, pipe_id: PipeId, end: DuctEnd) -> f64 {
+        let duct = self.model.pipe(pipe_id);
+        let state = self.pipe_end_state(pipe_id, end);
+        state.rho.max(0.0) * duct.config().area * duct.config().dx()
+    }
+
+    fn boundary_request(
+        &self,
+        pipe_id: PipeId,
+        end: DuctEnd,
+        external_state: PipeState,
+        flow_area_m2: f64,
+        inflow_species: SpeciesFractions,
+        cell_fraction: f64,
+    ) -> EnginePipeBoundaryRequest {
+        EnginePipeBoundaryRequest {
+            pipe_id,
+            end,
+            external_state,
+            flow_area_m2,
+            inflow_species,
+            cell_fraction,
+        }
+    }
+
+    fn pipe_end_state(&self, pipe_id: PipeId, end: DuctEnd) -> PipeState {
+        self.model.pipe_end_state(PipeEnd { pipe_id, end })
+    }
+
+    fn pipe_end_species(&self, pipe_id: PipeId, end: DuctEnd) -> SpeciesFractions {
+        self.model.pipe_end_species(PipeEnd { pipe_id, end })
+    }
+
+    fn pipe_end_primitive(&self, pipe_id: PipeId, end: DuctEnd) -> onedpipes::Primitive {
+        self.pipe_end_state(pipe_id, end)
+            .primitive_clamped(self.gas)
+    }
+
+    fn exhaust_exit_pressure_pa(&self) -> f64 {
+        let exit_pipe = self.exhaust_collector.unwrap_or(self.exhaust_runner);
+        self.pipe_end_primitive(exit_pipe, DuctEnd::Right).p
+    }
+
+    fn step_stable(
+        &mut self,
+        timestep_seconds: f64,
+        intake_plenum_request: EnginePipeBoundaryRequest,
+        intake_valve_request: EnginePipeBoundaryRequest,
+        exhaust_valve_request: EnginePipeBoundaryRequest,
+        plenum_donor_budget_kg: f64,
+        chamber_donor_budget_kg: f64,
+    ) -> [AcceptedPipeTransfer; 3] {
+        if timestep_seconds <= 0.0 {
+            return [AcceptedPipeTransfer::default(); 3];
+        }
+
+        let requests = [
+            (INTAKE_PLENUM_EXTERNAL_ID, intake_plenum_request),
+            (INTAKE_VALVE_EXTERNAL_ID, intake_valve_request),
+            (EXHAUST_VALVE_EXTERNAL_ID, exhaust_valve_request),
+        ];
+        // Remaining mass each donor volume may still push into the pipes this
+        // step; request 0 draws on the plenum, requests 1 and 2 share the
+        // chamber.
+        let mut plenum_budget_kg = plenum_donor_budget_kg.max(0.0);
+        let mut chamber_budget_kg = chamber_donor_budget_kg.max(0.0);
+        let mut accepted = [AcceptedPipeTransfer::default(); 3];
+        let mut remaining_seconds = timestep_seconds;
+        while remaining_seconds > f64::EPSILON {
+            let stable_dt = self.model.stable_timestep();
+            let substep_seconds = if stable_dt.is_finite() && stable_dt > 0.0 {
+                remaining_seconds.min(stable_dt)
+            } else {
+                remaining_seconds
+            };
+            self.model.clear_external_boundary_controls();
+            for (index, (external_id, request)) in requests.into_iter().enumerate() {
+                // Re-evaluate the orifice flow from the live pipe end state so
+                // the request itself decays as the boundary cell equalizes
+                // with the (frozen) external state, instead of a stale
+                // start-of-step rate being forced in all step long.
+                let mut flow = pipe_to_external_orifice_flow(
+                    self.pipe_end_state(request.pipe_id, request.end),
+                    request.external_state,
+                    request.flow_area_m2,
+                    self.gas,
+                );
+                // Negative flow draws mass from the donor volume into the
+                // pipe; never draw more than the donor has left to give.
+                let donor_budget_kg = if index == 0 {
+                    plenum_budget_kg
+                } else {
+                    chamber_budget_kg
+                };
+                let inflow_mass_kg = -flow.mass_kg_per_s * substep_seconds;
+                if inflow_mass_kg > donor_budget_kg {
+                    let scale = (donor_budget_kg / inflow_mass_kg).clamp(0.0, 1.0);
+                    flow.mass_kg_per_s *= scale;
+                    flow.energy_w *= scale;
+                }
+                // Cap the transfer at a fraction of the boundary cell's
+                // *current* mass — the solver-stability bound, re-derived per
+                // substep so a sustained pulse is rate-limited but not
+                // throttled to a fraction of the initial near-ambient cell.
+                let max_mass_transfer_kg = request.cell_fraction.max(0.0)
+                    * self
+                        .pipe_end_cell_mass_kg(request.pipe_id, request.end)
+                        .max(1.0e-9);
+                self.set_external_flow(external_id, request, flow, max_mass_transfer_kg);
+            }
+            let report = self.model.step_with_dt(substep_seconds);
+            for diagnostic in report.external_boundary_diagnostics {
+                let Some(index) = external_transfer_index(diagnostic.external_id) else {
+                    continue;
+                };
+                accepted[index].absorb(AcceptedPipeTransfer {
+                    mass_kg: diagnostic.mass_transferred_out,
+                    energy_j: diagnostic.energy_transferred_out,
+                    species_kg: diagnostic.species_transferred_out,
+                });
+                // Positive transfer is pipe -> external; negative drew mass
+                // from the donor volume.
+                let drawn_kg = (-diagnostic.mass_transferred_out).max(0.0);
+                if index == 0 {
+                    plenum_budget_kg = (plenum_budget_kg - drawn_kg).max(0.0);
+                } else {
+                    chamber_budget_kg = (chamber_budget_kg - drawn_kg).max(0.0);
+                }
+            }
+            remaining_seconds -= substep_seconds;
+        }
+        accepted
+    }
+
+    fn set_external_flow(
+        &mut self,
+        external_id: usize,
+        request: EnginePipeBoundaryRequest,
+        flow: EnginePipeFlow,
+        max_mass_transfer: f64,
+    ) {
+        let max_energy_transfer = if flow.mass_kg_per_s.abs() > 0.0 {
+            max_mass_transfer * (flow.energy_w / flow.mass_kg_per_s).abs()
         } else {
-            remaining_seconds
+            0.0
         };
-        pipe.step(left_boundary, right_boundary, substep_seconds);
-        remaining_seconds -= substep_seconds;
+        self.model.set_external_boundary_control(
+            ExternalBoundaryId(external_id),
+            ExternalBoundaryControl::BoundedFlow {
+                mass_flow_out: flow.mass_kg_per_s,
+                energy_flow_out: flow.energy_w,
+                max_mass_transfer,
+                max_energy_transfer,
+                inflow_species: request.inflow_species,
+            },
+        );
+    }
+}
+
+fn pipe_state_from_pressure_temperature(
+    pressure_pa: f64,
+    temperature_k: f64,
+    gas: TemperatureDependentAir,
+) -> PipeState {
+    PipeState::from_primitive(
+        pressure_pa.max(1.0) / (gas.r() * temperature_k.max(1.0)),
+        0.0,
+        pressure_pa.max(1.0),
+        gas,
+    )
+}
+
+fn pipe_to_external_orifice_flow(
+    pipe_state: PipeState,
+    external_state: PipeState,
+    flow_area_m2: f64,
+    gas: TemperatureDependentAir,
+) -> EnginePipeFlow {
+    if flow_area_m2 <= 0.0 {
+        return EnginePipeFlow::zero();
+    }
+
+    let flow = ValveOrifice::new(1.0, flow_area_m2).mass_flow(
+        physical_pipe_state(pipe_state, gas),
+        physical_pipe_state(external_state, gas),
+        gas,
+    );
+    EnginePipeFlow {
+        mass_kg_per_s: flow.mass_flow,
+        energy_w: flow.energy_flow,
+    }
+}
+
+fn physical_pipe_state(state: PipeState, gas: TemperatureDependentAir) -> PipeState {
+    if state.try_primitive(gas).is_ok() {
+        return state;
+    }
+
+    let primitive = state.primitive_clamped(gas);
+    let rho = if primitive.rho.is_finite() {
+        primitive.rho.max(1.0e-8)
+    } else {
+        1.0e-8
+    };
+    let velocity = if primitive.u.is_finite() {
+        primitive.u
+    } else {
+        0.0
+    };
+    let pressure = if primitive.p.is_finite() {
+        primitive.p.max(1.0)
+    } else {
+        1.0
+    };
+    PipeState::from_primitive(rho, velocity, pressure, gas)
+}
+
+fn chamber_species_to_pipe_fractions(species: ChamberSpeciesMasses) -> SpeciesFractions {
+    // SpeciesFractions::new normalizes by the sum and falls back to AIR when
+    // the total is non-positive, so raw masses can be passed straight through.
+    SpeciesFractions::new(
+        species.oxygen_kg,
+        species.fuel_kg,
+        species.inert_kg,
+        species.products_kg,
+    )
+}
+
+/// Inverse of [`chamber_species_to_pipe_fractions`]: mass fractions reinterpreted
+/// as masses, which is exact for ratio-based consumers like `lambda`.
+fn pipe_fractions_to_chamber_species(fractions: SpeciesFractions) -> ChamberSpeciesMasses {
+    ChamberSpeciesMasses {
+        oxygen_kg: fractions.oxygen,
+        fuel_kg: fractions.fuel_vapor,
+        inert_kg: fractions.inert,
+        products_kg: fractions.products,
+    }
+}
+
+fn species_mass_to_chamber_species(
+    species: SpeciesMass,
+    timestep_seconds: f64,
+) -> ChamberSpeciesMasses {
+    if timestep_seconds <= 0.0 {
+        return ChamberSpeciesMasses::default();
+    }
+
+    ChamberSpeciesMasses {
+        oxygen_kg: species.oxygen / timestep_seconds,
+        fuel_kg: species.fuel_vapor / timestep_seconds,
+        inert_kg: species.inert / timestep_seconds,
+        products_kg: species.products / timestep_seconds,
+    }
+}
+
+fn external_transfer_index(external_id: usize) -> Option<usize> {
+    match external_id {
+        INTAKE_PLENUM_EXTERNAL_ID => Some(0),
+        INTAKE_VALVE_EXTERNAL_ID => Some(1),
+        EXHAUST_VALVE_EXTERNAL_ID => Some(2),
+        _ => None,
     }
 }
 
@@ -1479,30 +1732,6 @@ fn limit_chamber_outflow_fluxes(
     }
 }
 
-fn flux_with_chamber_species_for_outflow(
-    flux: PipeBoundaryFlux,
-    chamber_species: ChamberSpeciesMasses,
-) -> PipeBoundaryFlux {
-    if flux.mass_kg_per_s >= 0.0 {
-        return flux;
-    }
-
-    let chamber_mass_kg = chamber_species.total_mass_kg();
-    if chamber_mass_kg <= 0.0 {
-        return PipeBoundaryFlux::zero();
-    }
-
-    PipeBoundaryFlux {
-        species_kg_per_s: ChamberSpeciesMasses {
-            oxygen_kg: flux.mass_kg_per_s * chamber_species.oxygen_kg / chamber_mass_kg,
-            fuel_kg: flux.mass_kg_per_s * chamber_species.fuel_kg / chamber_mass_kg,
-            inert_kg: flux.mass_kg_per_s * chamber_species.inert_kg / chamber_mass_kg,
-            products_kg: flux.mass_kg_per_s * chamber_species.products_kg / chamber_mass_kg,
-        },
-        ..flux
-    }
-}
-
 fn scaled_species_flow(species: ChamberSpeciesMasses, scale: f64) -> ChamberSpeciesMasses {
     ChamberSpeciesMasses {
         oxygen_kg: species.oxygen_kg * scale,
@@ -1522,17 +1751,6 @@ fn positive_intake_air_delta_kg(
 
     (intake_species_flow_kg_per_s.oxygen_kg * timestep_seconds).max(0.0)
         / DRY_AIR_OXYGEN_MASS_FRACTION
-}
-
-fn exhaust_lambda_from_species(
-    species: ChamberSpeciesMasses,
-    stoichiometric_air_fuel_ratio: f64,
-) -> Option<f64> {
-    // Exhaust gas is almost entirely combustion products, so it must use the
-    // same combustion-invariant reconstruction as the chamber: split products
-    // back into the air and fuel that formed them rather than reading the
-    // (near-zero) leftover fuel directly.
-    species.lambda(stoichiometric_air_fuel_ratio)
 }
 
 fn fuel_mass_for_lambda_at_spark(
@@ -1642,9 +1860,11 @@ fn gas_force_n(definition: &EngineDefinition, cylinder_pressure_pa: f64) -> f64 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine_config::{ValveLiftProfileDefinition, ValveLiftProfileModel};
     use crate::physics::chamber::{
         ChamberDerivatives, ChamberSpeciesMasses, FlowBoundary, chamber_derivatives,
     };
+    use crate::physics::gas::cp;
 
     const EPSILON: f64 = 1.0e-9;
 
@@ -1698,6 +1918,120 @@ mod tests {
         assert_eq!(definition.metadata.name, "Suzuki GN250 approximation");
         assert_eq!(definition.geometry.bore_m, 0.072);
         assert_eq!(definition.geometry.stroke_m, 0.0612);
+    }
+
+    #[test]
+    fn pipe_orifice_flow_sign_matches_engine_boundary_convention() {
+        let gas = TemperatureDependentAir::new();
+        let high_pressure = pipe_state_from_pressure_temperature(120_000.0, 300.0, gas);
+        let low_pressure = pipe_state_from_pressure_temperature(100_000.0, 300.0, gas);
+
+        let pipe_to_external =
+            pipe_to_external_orifice_flow(high_pressure, low_pressure, 1.0e-4, gas);
+        assert!(pipe_to_external.mass_kg_per_s > 0.0);
+        assert!(pipe_to_external.energy_w > 0.0);
+
+        let external_to_pipe =
+            pipe_to_external_orifice_flow(low_pressure, high_pressure, 1.0e-4, gas);
+        assert!(external_to_pipe.mass_kg_per_s < 0.0);
+        assert!(external_to_pipe.energy_w < 0.0);
+
+        assert_eq!(
+            pipe_to_external_orifice_flow(high_pressure, low_pressure, 0.0, gas),
+            EnginePipeFlow::zero()
+        );
+    }
+
+    #[test]
+    fn chamber_pipe_outflow_removes_mass_and_does_not_heat_the_charge() {
+        let definition = definition();
+        let properties = chamber_properties(&definition);
+        let mut species = ChamberSpeciesMasses::from_dry_air_mass(1.0e-3);
+        let state = ChamberState {
+            mass_kg: species.total_mass_kg(),
+            temperature_k: 600.0,
+        };
+        let mass_rate = -1.0e-4;
+        let timestep_seconds = 0.01;
+        let flux = PipeBoundaryFlux {
+            mass_kg_per_s: mass_rate,
+            momentum_n: 0.0,
+            energy_w: mass_rate
+                * cp(
+                    properties.gas_constant_j_per_kg_k,
+                    properties.specific_heat_ratio,
+                )
+                * state.temperature_k,
+            species_kg_per_s: ChamberSpeciesMasses {
+                oxygen_kg: mass_rate.abs() * -DRY_AIR_OXYGEN_MASS_FRACTION,
+                fuel_kg: 0.0,
+                inert_kg: mass_rate.abs() * -(1.0 - DRY_AIR_OXYGEN_MASS_FRACTION),
+                products_kg: 0.0,
+            },
+        };
+
+        let updated = step_chamber_with_pipe_fluxes(
+            &mut species,
+            state,
+            properties,
+            [flux, PipeBoundaryFlux::zero()],
+            0.0,
+            timestep_seconds,
+            |_| (1.0e-4, 0.0),
+        );
+
+        assert_approx_eq(updated.mass_kg, 9.99e-4, 1.0e-12);
+        assert!(updated.temperature_k.is_finite());
+        assert!(
+            updated.temperature_k < state.temperature_k,
+            "enthalpy outflow should not heat a fixed-volume charge: {} K -> {} K",
+            state.temperature_k,
+            updated.temperature_k
+        );
+    }
+
+    #[test]
+    fn chamber_pipe_cool_inflow_adds_mass_and_cools_the_charge() {
+        let definition = definition();
+        let properties = chamber_properties(&definition);
+        let mut species = ChamberSpeciesMasses::from_dry_air_mass(1.0e-3);
+        let state = ChamberState {
+            mass_kg: species.total_mass_kg(),
+            temperature_k: 600.0,
+        };
+        let mass_rate = 1.0e-4;
+        let timestep_seconds = 0.01;
+        let source_temperature_k = 300.0;
+        let flux = PipeBoundaryFlux {
+            mass_kg_per_s: mass_rate,
+            momentum_n: 0.0,
+            energy_w: mass_rate
+                * cp(
+                    properties.gas_constant_j_per_kg_k,
+                    properties.specific_heat_ratio,
+                )
+                * source_temperature_k,
+            species_kg_per_s: ChamberSpeciesMasses::from_dry_air_mass(mass_rate),
+        };
+
+        let updated = step_chamber_with_pipe_fluxes(
+            &mut species,
+            state,
+            properties,
+            [flux, PipeBoundaryFlux::zero()],
+            0.0,
+            timestep_seconds,
+            |_| (1.0e-4, 0.0),
+        );
+
+        assert_approx_eq(updated.mass_kg, 1.001e-3, 1.0e-12);
+        assert!(updated.temperature_k.is_finite());
+        assert!(
+            updated.temperature_k < state.temperature_k,
+            "cool inflow should reduce fixed-volume chamber temperature: {} K -> {} K",
+            state.temperature_k,
+            updated.temperature_k
+        );
     }
 
     #[test]
@@ -2043,6 +2377,11 @@ mod tests {
             volume_m3,
             chamber_properties(&definition),
         );
+        // Keep the species inventory consistent with the pressurized charge:
+        // step() re-derives the chamber mass from species, so without this the
+        // 1.2x overpressure would be silently discarded before the valves see it.
+        engine.chamber_species =
+            ChamberSpeciesMasses::from_dry_air_mass(engine.chamber_state.mass_kg);
 
         let output = engine.step(SingleCylinderStepInputs {
             fixed_crank_speed_rad_per_s: Some(rpm_to_rad_per_s(3000.0)),
@@ -2050,7 +2389,61 @@ mod tests {
         });
 
         assert!(output.intake_effective_area_m2 > 0.0);
-        assert!(output.intake_mass_flow_kg_per_s < 0.0);
+        assert!(
+            output.intake_mass_flow_kg_per_s < 0.0,
+            "intake flow = {} (runner {} Pa, plenum {} Pa, cyl {} Pa, area {} m2)",
+            output.intake_mass_flow_kg_per_s,
+            output.intake_runner_pressure_pa,
+            output.intake_plenum_pressure_pa,
+            output.cylinder_pressure_pa,
+            output.intake_effective_area_m2,
+        );
+    }
+
+    #[test]
+    fn step_uses_segmented_cubic_valve_profile_for_effective_area() {
+        let mut definition = definition();
+        definition.combustion.enabled = false;
+        definition.crank.initial_crank_angle_deg = 420.0;
+        definition.valves.intake.open_angle_deg = 360.0;
+        definition.valves.intake.close_angle_deg = 600.0;
+        definition.valves.intake.opening_ramp_fraction = 0.5;
+        definition.valves.intake.plateau_fraction = 0.0;
+
+        let mut segmented_definition = definition.clone();
+        segmented_definition.valves.intake.lift_profile = ValveLiftProfileDefinition {
+            model: ValveLiftProfileModel::SegmentedCubic,
+            ramp_lift_fraction: 0.25,
+            ramp_duration_fraction: 20.0,
+            main_lift_duration_fraction: 80.0,
+            dwell_duration_fraction: 40.0,
+        };
+
+        let mut legacy_engine = SingleCylinderEngine::from_definition(definition);
+        let mut segmented_engine =
+            SingleCylinderEngine::from_definition(segmented_definition.clone());
+        let inputs = SingleCylinderStepInputs {
+            fixed_crank_speed_rad_per_s: Some(0.0),
+            ..SingleCylinderStepInputs::default()
+        };
+
+        let legacy_output = legacy_engine.step(inputs);
+        let segmented_output = segmented_engine.step(inputs);
+        let expected_segmented_area =
+            ValveEvent::from_definition(segmented_definition.valves.intake)
+                .effective_area_m2(420.0_f64.to_radians());
+
+        assert_approx_eq(
+            segmented_output.intake_effective_area_m2,
+            expected_segmented_area,
+            1.0e-15,
+        );
+        assert!(
+            segmented_output.intake_effective_area_m2 > legacy_output.intake_effective_area_m2,
+            "segmented area {} should exceed legacy area {} at 25% event progress",
+            segmented_output.intake_effective_area_m2,
+            legacy_output.intake_effective_area_m2,
+        );
     }
 
     #[test]
@@ -2070,11 +2463,12 @@ mod tests {
         // With a collector the engine stays stable and reports a finite,
         // positive collector pressure distinct from the open boundary.
         let mut with_collector = definition();
-        with_collector.intake_exhaust.exhaust_collector = Some(crate::engine_config::PipeDefinition {
-            number_of_cells: 6,
-            total_length_m: 0.6,
-            area_m2: 0.00096,
-        });
+        with_collector.intake_exhaust.exhaust_collector =
+            Some(crate::engine_config::PipeDefinition {
+                number_of_cells: 6,
+                total_length_m: 0.6,
+                area_m2: 0.00096,
+            });
         let mut engine = SingleCylinderEngine::from_definition(with_collector);
         let mut last = engine.step(SingleCylinderStepInputs {
             fixed_crank_speed_rad_per_s: Some(rpm_to_rad_per_s(3000.0)),
