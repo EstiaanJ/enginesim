@@ -794,6 +794,82 @@ fn throttle_load_sweep_emits_plot_ready_grid_points() {
 }
 
 #[test]
+fn closed_throttle_substantially_reduces_fixed_speed_torque() {
+    let definition = gn250_definition();
+    let profile = SimulationProfile {
+        timestep_seconds: gn250_timestep_seconds(),
+        ..SimulationProfile::real_time()
+    };
+    let wot = cycle_run_stats_with_profile_and_inputs(
+        &definition,
+        profile,
+        3000.0,
+        2,
+        SingleCylinderStepInputs {
+            throttle_position: 1.0,
+            idle_throttle_fraction: 0.0,
+            ..SingleCylinderStepInputs::default()
+        },
+    );
+    let closed = cycle_run_stats_with_profile_and_inputs(
+        &definition,
+        profile,
+        3000.0,
+        2,
+        SingleCylinderStepInputs {
+            throttle_position: 0.0,
+            idle_throttle_fraction: 0.0,
+            ..SingleCylinderStepInputs::default()
+        },
+    );
+    assert!(
+        closed.mean_torque_nm < wot.mean_torque_nm * 0.35,
+        "closed throttle should materially reduce fixed-speed torque: WOT {:.3} Nm, closed {:.3} Nm",
+        wot.mean_torque_nm,
+        closed.mean_torque_nm
+    );
+    assert!(
+        closed.peak_pressure_pa < wot.peak_pressure_pa * 0.70,
+        "closed throttle should materially reduce cylinder filling/peak pressure: WOT {:.0} Pa, closed {:.0} Pa",
+        wot.peak_pressure_pa,
+        closed.peak_pressure_pa
+    );
+}
+
+#[test]
+fn closed_throttle_allows_intake_plenum_vacuum_under_engine_draw() {
+    let definition = gn250_definition();
+    let profile = SimulationProfile {
+        timestep_seconds: gn250_timestep_seconds(),
+        ..SimulationProfile::real_time()
+    };
+    let mut engine =
+        SingleCylinderEngine::from_definition_with_profile(definition.clone(), profile);
+    let crank_speed_rad_per_s = rpm_to_rad_per_s(3000.0);
+    let steps_per_cycle = ((std::f64::consts::TAU * 2.0)
+        / (crank_speed_rad_per_s * profile.timestep_seconds))
+        .ceil() as usize;
+    let mut min_map_pa = f64::INFINITY;
+
+    for _ in 0..(steps_per_cycle * 4) {
+        let output = engine.step(SingleCylinderStepInputs {
+            fixed_crank_speed_rad_per_s: Some(crank_speed_rad_per_s),
+            throttle_position: 0.0,
+            idle_throttle_fraction: 0.0,
+            ..SingleCylinderStepInputs::default()
+        });
+        min_map_pa = min_map_pa.min(output.intake_plenum_pressure_pa);
+    }
+
+    assert!(
+        min_map_pa < definition.boundaries.intake_pressure_pa * 0.90,
+        "closed throttle with engine draw should pull the intake plenum below upstream pressure: upstream {:.0} Pa, minimum MAP {:.0} Pa",
+        definition.boundaries.intake_pressure_pa,
+        min_map_pa
+    );
+}
+
+#[test]
 fn dynamic_crank_step_responds_to_external_load_torque() {
     let mut engine = SingleCylinderEngine::from_definition(gn250_definition());
     let initial_speed = engine.crank_speed_rad_per_s();

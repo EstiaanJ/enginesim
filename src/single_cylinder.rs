@@ -168,9 +168,14 @@ pub struct SingleCylinderStepInputs {
     pub throttle_position: f64,
     pub idle_throttle_fraction: f64,
     pub throttle_effective_area_fraction: Option<f64>,
-    /// When set, the intake plenum is pinned to this absolute pressure each
-    /// step (a forced-MAP diagnostic), bypassing throttle/plenum dynamics.
+    /// When set, the intake manifold behaves as an ideal pressure reservoir at
+    /// this absolute pressure for the whole step, bypassing throttle/plenum
+    /// dynamics. This is the primary forced-MAP diagnostic mode.
     pub forced_map_pressure_pa: Option<f64>,
+    /// Legacy finite-plenum MAP forcing: when set, the plenum is reset to this
+    /// pressure before pipe coupling, then runner/plenum exchange is allowed to
+    /// move it during the step.
+    pub repinned_plenum_pressure_pa: Option<f64>,
 }
 
 impl Default for SingleCylinderStepInputs {
@@ -189,6 +194,7 @@ impl Default for SingleCylinderStepInputs {
             idle_throttle_fraction: 0.0,
             throttle_effective_area_fraction: None,
             forced_map_pressure_pa: None,
+            repinned_plenum_pressure_pa: None,
         }
     }
 }
@@ -494,12 +500,29 @@ impl SingleCylinderEngine {
             plenum_fallback_properties,
             timestep_seconds,
         );
-        if let Some(forced_map_pressure_pa) = inputs.forced_map_pressure_pa {
-            // Forced-MAP diagnostic: overwrite the plenum so the manifold sits
-            // at the requested absolute pressure, regardless of throttle. The
-            // runner is then fed from this pinned state for the rest of the step.
+        let ideal_map_pressure_pa = inputs
+            .forced_map_pressure_pa
+            .map(|pressure| pressure.max(1.0));
+        let repinned_plenum_pressure_pa = inputs
+            .repinned_plenum_pressure_pa
+            .map(|pressure| pressure.max(1.0));
+        if let Some(repinned_plenum_pressure_pa) = repinned_plenum_pressure_pa {
+            // Legacy finite-plenum MAP forcing: reset the plenum before pipe
+            // coupling, then allow pipe/plenum exchange to move it during the
+            // step.
             self.intake_plenum = PlenumState::from_pressure_temperature(
-                forced_map_pressure_pa.max(1.0),
+                repinned_plenum_pressure_pa,
+                self.definition.boundaries.intake_temperature_k,
+                self.intake_plenum.volume_m3,
+                plenum_fallback_properties,
+            );
+        }
+        if let Some(ideal_map_pressure_pa) = ideal_map_pressure_pa {
+            // Ideal forced-MAP diagnostic: the runner sees the requested
+            // pressure source for this step, and the stored/reporting plenum is
+            // restored to that source after pipe coupling below.
+            self.intake_plenum = PlenumState::from_pressure_temperature(
+                ideal_map_pressure_pa,
                 self.definition.boundaries.intake_temperature_k,
                 self.intake_plenum.volume_m3,
                 plenum_fallback_properties,
@@ -535,9 +558,13 @@ impl SingleCylinderEngine {
         // Donor budgets: how much mass each external volume may supply into
         // the pipes over this step without dropping below its minimum. The
         // chamber budget is shared by the intake and exhaust valve boundaries.
-        let plenum_donor_budget_kg = (self.intake_plenum.species.total_mass_kg()
-            - plenum_fallback_properties.minimum_mass_kg)
-            .max(0.0);
+        let plenum_donor_budget_kg = if ideal_map_pressure_pa.is_some() {
+            f64::INFINITY
+        } else {
+            (self.intake_plenum.species.total_mass_kg()
+                - plenum_fallback_properties.minimum_mass_kg)
+                .max(0.0)
+        };
         let chamber_donor_budget_kg =
             (self.chamber_species.total_mass_kg() - chamber_props.minimum_mass_kg).max(0.0);
 
@@ -587,11 +614,19 @@ impl SingleCylinderEngine {
             // linear integration of the constant flux/heat rates.
             |_| (plenum_volume_m3, 0.0),
         );
+        if let Some(ideal_map_pressure_pa) = ideal_map_pressure_pa {
+            self.intake_plenum = PlenumState::from_pressure_temperature(
+                ideal_map_pressure_pa,
+                self.definition.boundaries.intake_temperature_k,
+                self.intake_plenum.volume_m3,
+                plenum_fallback_properties,
+            );
+        }
         let intake_species_flow_kg_per_s = intake_flux.species_kg_per_s;
         let exhaust_species_flow_kg_per_s =
             scaled_species_flow(exhaust_flux.species_kg_per_s, -1.0);
         self.current_cycle_intake_air_kg +=
-            positive_intake_air_delta_kg(intake_species_flow_kg_per_s, timestep_seconds);
+            net_intake_air_delta_kg(intake_species_flow_kg_per_s, timestep_seconds);
         self.species_budget.fuel_exported_through_exhaust_kg +=
             (exhaust_species_flow_kg_per_s.fuel_kg * timestep_seconds).max(0.0);
         self.species_budget.products_exported_through_exhaust_kg +=
@@ -1741,7 +1776,7 @@ fn scaled_species_flow(species: ChamberSpeciesMasses, scale: f64) -> ChamberSpec
     }
 }
 
-fn positive_intake_air_delta_kg(
+fn net_intake_air_delta_kg(
     intake_species_flow_kg_per_s: ChamberSpeciesMasses,
     timestep_seconds: f64,
 ) -> f64 {
@@ -1749,8 +1784,7 @@ fn positive_intake_air_delta_kg(
         return 0.0;
     }
 
-    (intake_species_flow_kg_per_s.oxygen_kg * timestep_seconds).max(0.0)
-        / DRY_AIR_OXYGEN_MASS_FRACTION
+    intake_species_flow_kg_per_s.oxygen_kg * timestep_seconds / DRY_AIR_OXYGEN_MASS_FRACTION
 }
 
 fn fuel_mass_for_lambda_at_spark(
@@ -2157,7 +2191,7 @@ mod tests {
     }
 
     #[test]
-    fn intake_air_accumulator_uses_oxygen_equivalent_air_only() {
+    fn intake_air_accumulator_uses_net_oxygen_equivalent_air_only() {
         let species_flow = ChamberSpeciesMasses {
             oxygen_kg: DRY_AIR_OXYGEN_MASS_FRACTION * 0.020,
             inert_kg: 10.0,
@@ -2166,8 +2200,19 @@ mod tests {
         };
 
         assert_approx_eq(
-            positive_intake_air_delta_kg(species_flow, 0.5),
+            net_intake_air_delta_kg(species_flow, 0.5),
             0.010,
+            EPSILON,
+        );
+        assert_approx_eq(
+            net_intake_air_delta_kg(
+                ChamberSpeciesMasses {
+                    oxygen_kg: -DRY_AIR_OXYGEN_MASS_FRACTION * 0.020,
+                    ..species_flow
+                },
+                0.5,
+            ),
+            -0.010,
             EPSILON,
         );
     }
@@ -2276,7 +2321,7 @@ mod tests {
         let target_pa = 60_000.0;
         let crank_speed_rad_per_s = rpm_to_rad_per_s(3000.0);
 
-        // Step a few cycles with the MAP override pinned well below ambient.
+        // Step a few cycles with the ideal MAP override pinned well below ambient.
         let mut last_map_pa = 0.0;
         for _ in 0..4_000 {
             let output = engine.step(SingleCylinderStepInputs {
@@ -2293,6 +2338,30 @@ mod tests {
         assert!(
             (last_map_pa - target_pa).abs() < 3_000.0,
             "forced MAP should hold near {target_pa} Pa, got {last_map_pa} Pa"
+        );
+    }
+
+    #[test]
+    fn repinned_plenum_pressure_preserves_finite_plenum_drift() {
+        let definition = definition();
+        let mut engine = SingleCylinderEngine::from_definition(definition);
+        let target_pa = 60_000.0;
+        let crank_speed_rad_per_s = rpm_to_rad_per_s(3000.0);
+
+        let mut last_map_pa = 0.0;
+        for _ in 0..4_000 {
+            let output = engine.step(SingleCylinderStepInputs {
+                fixed_crank_speed_rad_per_s: Some(crank_speed_rad_per_s),
+                repinned_plenum_pressure_pa: Some(target_pa),
+                throttle_position: 1.0,
+                ..SingleCylinderStepInputs::default()
+            });
+            last_map_pa = output.intake_plenum_pressure_pa;
+        }
+
+        assert!(
+            last_map_pa > target_pa + 3_000.0,
+            "repinned finite plenum should be able to drift after pipe exchange; target {target_pa} Pa, got {last_map_pa} Pa"
         );
     }
 

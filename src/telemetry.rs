@@ -139,6 +139,7 @@ impl EngineControls {
             forced_map_pressure_pa: self
                 .map_override_enabled
                 .then(|| self.map_override_pa.clamp(1.0, MAP_OVERRIDE_MAX_PA)),
+            repinned_plenum_pressure_pa: None,
         }
     }
 
