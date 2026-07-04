@@ -837,6 +837,57 @@ fn closed_throttle_substantially_reduces_fixed_speed_torque() {
 }
 
 #[test]
+fn closed_throttle_does_not_keep_importing_net_fresh_air() {
+    let definition = gn250_definition();
+    let profile = SimulationProfile {
+        timestep_seconds: gn250_timestep_seconds(),
+        ..SimulationProfile::real_time()
+    };
+    let mut engine = SingleCylinderEngine::from_definition_with_profile(definition, profile);
+    let crank_speed_rad_per_s = rpm_to_rad_per_s(3000.0);
+    let steps_per_cycle = ((std::f64::consts::TAU * 2.0)
+        / (crank_speed_rad_per_s * profile.timestep_seconds))
+        .ceil() as usize;
+
+    for _ in 0..(steps_per_cycle * REGRESSION_WARMUP_CYCLES) {
+        engine.step(SingleCylinderStepInputs {
+            fixed_crank_speed_rad_per_s: Some(crank_speed_rad_per_s),
+            throttle_position: 0.0,
+            idle_throttle_fraction: 0.0,
+            ..SingleCylinderStepInputs::default()
+        });
+    }
+
+    let mut net_oxygen_kg = 0.0;
+    let mut positive_oxygen_kg = 0.0;
+    let mut injected_fuel_kg = 0.0;
+    let mut burned_fuel_kg = 0.0;
+    for _ in 0..(steps_per_cycle * 2) {
+        let output = engine.step(SingleCylinderStepInputs {
+            fixed_crank_speed_rad_per_s: Some(crank_speed_rad_per_s),
+            throttle_position: 0.0,
+            idle_throttle_fraction: 0.0,
+            ..SingleCylinderStepInputs::default()
+        });
+        let oxygen_delta_kg =
+            output.intake_species_flow_kg_per_s.oxygen_kg * profile.timestep_seconds;
+        net_oxygen_kg += oxygen_delta_kg;
+        positive_oxygen_kg += oxygen_delta_kg.max(0.0);
+        injected_fuel_kg += output.fuel_injected_kg;
+        burned_fuel_kg += output.fuel_burned_kg;
+    }
+
+    assert!(
+        net_oxygen_kg < positive_oxygen_kg * 0.25,
+        "closed throttle should not turn intake reversion into net fresh air: net oxygen {:.6e} kg, positive-only oxygen {:.6e} kg, injected fuel {:.6e} kg, burned fuel {:.6e} kg",
+        net_oxygen_kg,
+        positive_oxygen_kg,
+        injected_fuel_kg,
+        burned_fuel_kg
+    );
+}
+
+#[test]
 fn closed_throttle_allows_intake_plenum_vacuum_under_engine_draw() {
     let definition = gn250_definition();
     let profile = SimulationProfile {

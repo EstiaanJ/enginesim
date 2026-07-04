@@ -14,7 +14,7 @@ use crate::physics::chamber::{
     DRY_AIR_OXYGEN_MASS_FRACTION, chamber_pressure_pa, integrate_internal_energy_rk4,
     mixture_chamber_properties, species_internal_energy_j,
 };
-use crate::physics::gas::cv;
+use crate::physics::gas::{cp, cv};
 use crate::physics::pipe::{PipeBoundaryFlux, PlenumState, ThrottlePlenumInput};
 use crate::profiles::SimulationProfile;
 use crate::simulation::{StepContext, StepModel};
@@ -30,6 +30,8 @@ use onedpipes::{
 };
 
 const LOW_SPEED_FUELING_FALLBACK_RPM: f64 = 500.0;
+const PLENUM_RUNNER_COUPLING_CELL_FRACTION: f64 = 0.05;
+const VALVE_COUPLING_CELL_FRACTION: f64 = 0.5;
 const INTAKE_PLENUM_EXTERNAL_ID: usize = 0;
 const INTAKE_VALVE_EXTERNAL_ID: usize = 1;
 const EXHAUST_VALVE_EXTERNAL_ID: usize = 2;
@@ -568,6 +570,7 @@ impl SingleCylinderEngine {
         let chamber_donor_budget_kg =
             (self.chamber_species.total_mass_kg() - chamber_props.minimum_mass_kg).max(0.0);
 
+        let intake_runner_mass_before_kg = self.pipes.pipe_total_mass_kg(self.pipes.intake_runner);
         let accepted_transfers = self.pipes.step_stable(
             timestep_seconds,
             self.pipes.boundary_request(
@@ -576,7 +579,7 @@ impl SingleCylinderEngine {
                 plenum_state,
                 self.pipes.pipe_area_m2(self.pipes.intake_runner),
                 chamber_species_to_pipe_fractions(self.intake_plenum.species),
-                0.5,
+                PLENUM_RUNNER_COUPLING_CELL_FRACTION,
             ),
             self.pipes.boundary_request(
                 self.pipes.intake_runner,
@@ -584,7 +587,7 @@ impl SingleCylinderEngine {
                 chamber_pipe_state,
                 intake_area_m2 * intake_valve.discharge_coefficient.clamp(0.0, 1.0),
                 chamber_species_to_pipe_fractions(self.chamber_species),
-                0.5,
+                VALVE_COUPLING_CELL_FRACTION,
             ),
             self.pipes.boundary_request(
                 self.pipes.exhaust_runner,
@@ -592,12 +595,28 @@ impl SingleCylinderEngine {
                 chamber_pipe_state,
                 exhaust_area_m2 * exhaust_valve.discharge_coefficient.clamp(0.0, 1.0),
                 chamber_species_to_pipe_fractions(self.chamber_species),
-                0.5,
+                VALVE_COUPLING_CELL_FRACTION,
             ),
+            self.intake_plenum.volume_m3,
             plenum_donor_budget_kg,
             chamber_donor_budget_kg,
         );
-        let [plenum_transfer, intake_transfer, exhaust_transfer] = accepted_transfers;
+        let [mut plenum_transfer, intake_transfer, exhaust_transfer] = accepted_transfers;
+        if ideal_map_pressure_pa.is_none() {
+            let intake_runner_mass_after_kg =
+                self.pipes.pipe_total_mass_kg(self.pipes.intake_runner);
+            let balanced_plenum_transfer_kg = -(intake_runner_mass_after_kg
+                - intake_runner_mass_before_kg)
+                - intake_transfer.mass_kg;
+            if balanced_plenum_transfer_kg.is_finite() {
+                plenum_transfer = accepted_transfer_from_plenum_mass_delta(
+                    balanced_plenum_transfer_kg,
+                    self.intake_plenum.species,
+                    self.intake_plenum.chamber_state.temperature_k,
+                    plenum_fallback_properties,
+                );
+            }
+        }
         let plenum_to_runner_flux = plenum_transfer.into_flux(timestep_seconds);
         let intake_flux = intake_transfer.into_flux(timestep_seconds);
         let exhaust_flux = exhaust_transfer.into_flux(timestep_seconds);
@@ -626,7 +645,7 @@ impl SingleCylinderEngine {
         let exhaust_species_flow_kg_per_s =
             scaled_species_flow(exhaust_flux.species_kg_per_s, -1.0);
         self.current_cycle_intake_air_kg +=
-            net_intake_air_delta_kg(intake_species_flow_kg_per_s, timestep_seconds);
+            net_plenum_supplied_air_delta_kg(plenum_to_runner_flux, timestep_seconds);
         self.species_budget.fuel_exported_through_exhaust_kg +=
             (exhaust_species_flow_kg_per_s.fuel_kg * timestep_seconds).max(0.0);
         self.species_budget.products_exported_through_exhaust_kg +=
@@ -1348,6 +1367,10 @@ impl OneDPipeNetwork {
         self.model.pipe(pipe_id).config().area
     }
 
+    fn pipe_total_mass_kg(&self, pipe_id: PipeId) -> f64 {
+        self.model.pipe_total_mass(pipe_id)
+    }
+
     fn pipe_end_cell_mass_kg(&self, pipe_id: PipeId, end: DuctEnd) -> f64 {
         let duct = self.model.pipe(pipe_id);
         let state = self.pipe_end_state(pipe_id, end);
@@ -1397,6 +1420,7 @@ impl OneDPipeNetwork {
         intake_plenum_request: EnginePipeBoundaryRequest,
         intake_valve_request: EnginePipeBoundaryRequest,
         exhaust_valve_request: EnginePipeBoundaryRequest,
+        plenum_volume_m3: f64,
         plenum_donor_budget_kg: f64,
         chamber_donor_budget_kg: f64,
     ) -> [AcceptedPipeTransfer; 3] {
@@ -1404,16 +1428,27 @@ impl OneDPipeNetwork {
             return [AcceptedPipeTransfer::default(); 3];
         }
 
-        let requests = [
+        let mut requests = [
             (INTAKE_PLENUM_EXTERNAL_ID, intake_plenum_request),
             (INTAKE_VALVE_EXTERNAL_ID, intake_valve_request),
             (EXHAUST_VALVE_EXTERNAL_ID, exhaust_valve_request),
         ];
+        let plenum_primitive = requests[0].1.external_state.primitive_clamped(self.gas);
+        let mut plenum_external_mass_kg =
+            (plenum_primitive.rho * plenum_volume_m3.max(0.0)).max(0.0);
+        let plenum_external_temperature_k = plenum_primitive.temperature.max(1.0);
+        let finite_plenum_feedback = plenum_volume_m3 > 0.0 && plenum_donor_budget_kg.is_finite();
         // Remaining mass each donor volume may still push into the pipes this
         // step; request 0 draws on the plenum, requests 1 and 2 share the
         // chamber.
         let mut plenum_budget_kg = plenum_donor_budget_kg.max(0.0);
         let mut chamber_budget_kg = chamber_donor_budget_kg.max(0.0);
+        let mut cell_transfer_budgets_kg = requests.map(|(_, request)| {
+            request.cell_fraction.max(0.0)
+                * self
+                    .pipe_end_cell_mass_kg(request.pipe_id, request.end)
+                    .max(1.0e-9)
+        });
         let mut accepted = [AcceptedPipeTransfer::default(); 3];
         let mut remaining_seconds = timestep_seconds;
         while remaining_seconds > f64::EPSILON {
@@ -1424,7 +1459,7 @@ impl OneDPipeNetwork {
                 remaining_seconds
             };
             self.model.clear_external_boundary_controls();
-            for (index, (external_id, request)) in requests.into_iter().enumerate() {
+            for (index, (external_id, request)) in requests.iter().copied().enumerate() {
                 // Re-evaluate the orifice flow from the live pipe end state so
                 // the request itself decays as the boundary cell equalizes
                 // with the (frozen) external state, instead of a stale
@@ -1448,14 +1483,11 @@ impl OneDPipeNetwork {
                     flow.mass_kg_per_s *= scale;
                     flow.energy_w *= scale;
                 }
-                // Cap the transfer at a fraction of the boundary cell's
-                // *current* mass — the solver-stability bound, re-derived per
-                // substep so a sustained pulse is rate-limited but not
-                // throttled to a fraction of the initial near-ambient cell.
-                let max_mass_transfer_kg = request.cell_fraction.max(0.0)
-                    * self
-                        .pipe_end_cell_mass_kg(request.pipe_id, request.end)
-                        .max(1.0e-9);
+                // Cap each macro-step transfer at a fraction of the boundary
+                // cell mass. Reusing the full cap for every solver substep
+                // lets external boundaries pump more than the intended
+                // boundary-cell inventory during one engine step.
+                let max_mass_transfer_kg = cell_transfer_budgets_kg[index].max(0.0);
                 self.set_external_flow(external_id, request, flow, max_mass_transfer_kg);
             }
             let report = self.model.step_with_dt(substep_seconds);
@@ -1468,11 +1500,29 @@ impl OneDPipeNetwork {
                     energy_j: diagnostic.energy_transferred_out,
                     species_kg: diagnostic.species_transferred_out,
                 });
+                cell_transfer_budgets_kg[index] = (cell_transfer_budgets_kg[index]
+                    - diagnostic.mass_transferred_out.abs())
+                .max(0.0);
                 // Positive transfer is pipe -> external; negative drew mass
                 // from the donor volume.
                 let drawn_kg = (-diagnostic.mass_transferred_out).max(0.0);
                 if index == 0 {
                     plenum_budget_kg = (plenum_budget_kg - drawn_kg).max(0.0);
+                    if finite_plenum_feedback {
+                        plenum_external_mass_kg = (plenum_external_mass_kg
+                            + diagnostic.mass_transferred_out)
+                            .max(1.0e-12);
+                        let pressure_pa = (plenum_external_mass_kg
+                            * self.gas.r()
+                            * plenum_external_temperature_k
+                            / plenum_volume_m3)
+                            .max(1.0);
+                        requests[0].1.external_state = pipe_state_from_pressure_temperature(
+                            pressure_pa,
+                            plenum_external_temperature_k,
+                            self.gas,
+                        );
+                    }
                 } else {
                     chamber_budget_kg = (chamber_budget_kg - drawn_kg).max(0.0);
                 }
@@ -1600,6 +1650,23 @@ fn species_mass_to_chamber_species(
         fuel_kg: species.fuel_vapor / timestep_seconds,
         inert_kg: species.inert / timestep_seconds,
         products_kg: species.products / timestep_seconds,
+    }
+}
+
+fn accepted_transfer_from_plenum_mass_delta(
+    mass_kg: f64,
+    plenum_species: ChamberSpeciesMasses,
+    temperature_k: f64,
+    properties: ChamberProperties,
+) -> AcceptedPipeTransfer {
+    let cp_j_per_kg_k = cp(
+        properties.gas_constant_j_per_kg_k,
+        properties.specific_heat_ratio,
+    );
+    AcceptedPipeTransfer {
+        mass_kg,
+        energy_j: mass_kg * cp_j_per_kg_k * temperature_k.max(properties.minimum_temperature_k),
+        species_kg: chamber_species_to_pipe_fractions(plenum_species).scale(mass_kg),
     }
 }
 
@@ -1776,15 +1843,12 @@ fn scaled_species_flow(species: ChamberSpeciesMasses, scale: f64) -> ChamberSpec
     }
 }
 
-fn net_intake_air_delta_kg(
-    intake_species_flow_kg_per_s: ChamberSpeciesMasses,
-    timestep_seconds: f64,
-) -> f64 {
+fn net_plenum_supplied_air_delta_kg(plenum_flux: PipeBoundaryFlux, timestep_seconds: f64) -> f64 {
     if timestep_seconds <= 0.0 || DRY_AIR_OXYGEN_MASS_FRACTION <= 0.0 {
         return 0.0;
     }
 
-    intake_species_flow_kg_per_s.oxygen_kg * timestep_seconds / DRY_AIR_OXYGEN_MASS_FRACTION
+    -plenum_flux.species_kg_per_s.oxygen_kg * timestep_seconds / DRY_AIR_OXYGEN_MASS_FRACTION
 }
 
 fn fuel_mass_for_lambda_at_spark(
@@ -2191,24 +2255,36 @@ mod tests {
     }
 
     #[test]
-    fn intake_air_accumulator_uses_net_oxygen_equivalent_air_only() {
+    fn intake_air_accumulator_uses_net_plenum_supplied_oxygen_equivalent_air_only() {
         let species_flow = ChamberSpeciesMasses {
             oxygen_kg: DRY_AIR_OXYGEN_MASS_FRACTION * 0.020,
             inert_kg: 10.0,
             fuel_kg: 0.0,
             products_kg: 5.0,
         };
+        let plenum_to_runner_flux = PipeBoundaryFlux {
+            mass_kg_per_s: -0.020,
+            momentum_n: 0.0,
+            energy_w: -1.0,
+            species_kg_per_s: ChamberSpeciesMasses {
+                oxygen_kg: -DRY_AIR_OXYGEN_MASS_FRACTION * 0.020,
+                ..species_flow
+            },
+        };
 
         assert_approx_eq(
-            net_intake_air_delta_kg(species_flow, 0.5),
+            net_plenum_supplied_air_delta_kg(plenum_to_runner_flux, 0.5),
             0.010,
             EPSILON,
         );
         assert_approx_eq(
-            net_intake_air_delta_kg(
-                ChamberSpeciesMasses {
-                    oxygen_kg: -DRY_AIR_OXYGEN_MASS_FRACTION * 0.020,
-                    ..species_flow
+            net_plenum_supplied_air_delta_kg(
+                PipeBoundaryFlux {
+                    species_kg_per_s: ChamberSpeciesMasses {
+                        oxygen_kg: DRY_AIR_OXYGEN_MASS_FRACTION * 0.020,
+                        ..species_flow
+                    },
+                    ..plenum_to_runner_flux
                 },
                 0.5,
             ),
